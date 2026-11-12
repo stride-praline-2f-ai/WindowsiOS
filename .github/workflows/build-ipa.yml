@@ -1,0 +1,82 @@
+name: Build iPhone Duo IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      bundle_id:
+        description: App bundle ID (must match the profile when signing)
+        default: me.ammaar.windowsios
+        required: true
+        type: string
+      sign_ipa:
+        description: Sign with Apple Development certificate and device profile secrets
+        default: false
+        type: boolean
+  push:
+    paths:
+      - '.github/workflows/build-ipa.yml'
+      - 'scripts/ci_*'
+      - 'scripts/build_ios_deps.sh'
+      - 'ios/**'
+      - 'core/**'
+      - 'devices/**'
+      - 'host/**'
+      - 'Makefile'
+
+permissions:
+  contents: read
+
+jobs:
+  ipa:
+    runs-on: macos-26
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      BUNDLE_ID: ${{ inputs.bundle_id || 'me.ammaar.windowsios' }}
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install build tools
+        run: |
+          test "$(uname -m)" = arm64
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          brew install xcodegen meson ninja pkg-config python
+
+      - name: Build iOS dependencies
+        run: bash scripts/build_ios_deps.sh
+
+      - name: Build and package ARM64 device app
+        run: bash scripts/ci_build_ipa.sh
+
+      - name: Sign for registered devices (optional)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.sign_ipa }}
+        env:
+          IOS_CERTIFICATE_P12_BASE64: ${{ secrets.IOS_CERTIFICATE_P12_BASE64 }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_PROFILE_BASE64: ${{ secrets.IOS_PROFILE_BASE64 }}
+        run: python3 scripts/ci_sign_app.py
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: WindowsiOS-iPhone-Duo-${{ github.run_number }}
+          path: build/artifacts/*
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload build diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: WindowsiOS-build-logs-${{ github.run_number }}
+          path: |
+            build/logs/
+            work/ios_deps_build/*.log
+          if-no-files-found: ignore
+          retention-days: 7

@@ -163,6 +163,7 @@ final class HingeObserverViewController: UIViewController {
     private func installHingeObserverIfAvailable() {
         guard !didInstallHinge else { return }
         didInstallHinge = true
+        #if WINIOS_HAS_HINGE_API
         guard NSClassFromString("UIHingeInteraction") != nil else { return }
         if #available(iOS 27.1, *) {
             let interaction = UIHingeInteraction { [weak self] _, update in
@@ -179,6 +180,7 @@ final class HingeObserverViewController: UIViewController {
             }
             view.addInteraction(interaction)
         }
+        #endif
     }
 }
 
