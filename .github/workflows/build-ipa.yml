@@ -28,7 +28,8 @@ permissions:
 
 jobs:
   ipa:
-    runs-on: macos-26
+    # Cross-compile on Intel to avoid the ARM64 runner capacity queue.
+    runs-on: macos-15-intel
     timeout-minutes: 90
     defaults:
       run:
@@ -43,7 +44,7 @@ jobs:
 
       - name: Install build tools
         run: |
-          test "$(uname -m)" = arm64
+          uname -m
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
           brew install xcodegen meson ninja pkg-config python

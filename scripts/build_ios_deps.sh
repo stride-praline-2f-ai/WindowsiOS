@@ -4,7 +4,9 @@
 # and copy StikJIT.xcframework + build libhusk_rppairing.a for Built-in StikJIT.
 set -euo pipefail
 
-export PATH="/opt/homebrew/bin:$HOME/.cargo/bin:$PATH"
+BREW_PREFIX="$(brew --prefix)"
+export PATH="$BREW_PREFIX/bin:$HOME/.cargo/bin:$PATH"
+BUILD_PYTHON="$(command -v python3)"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK_DEPS="$ROOT/work/ios_deps_build"
@@ -93,7 +95,7 @@ ranlib = ['$RANLIB']
 strip = ['$STRIP', '-x']
 pkg-config = ['$PKG_CONFIG']
 pkgconfig = ['$PKG_CONFIG']
-python = ['/opt/homebrew/bin/python3']
+python = ['$BUILD_PYTHON']
 [host_machine]
 system = '$system'
 EOF
