@@ -2,7 +2,10 @@
 
 The **Build iPhone Duo IPA** workflow cross-compiles the dependencies and engine,
 builds the ARM64 iPhoneOS app, and uploads an IPA and diagnostics. It uses the
-Apple Silicon `macos-26` runner. No Apple credentials are required for an unsigned
+Intel `macos-15-intel` runner to avoid ARM64 runner capacity constraints. Xcode and
+the dependency script still cross-compile the app and its libraries for ARM64
+iPhoneOS. Homebrew and Python paths are discovered from the build host rather
+than assuming `/opt/homebrew`. No Apple credentials are required for an unsigned
 build. The existing Laptop/Studio layout is included; CI cannot verify the
 README's device, performance, or OS compatibility claims.
 
