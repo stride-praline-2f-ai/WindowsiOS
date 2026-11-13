@@ -1,18 +1,20 @@
 #!/opt/homebrew/bin/python3
 """
-Provision a ready-to-boot Windows 11 Pro ARM64 (24H2, Build 26100) GPT NVMe disk image
-and UEFI NVRAM vars file from the official Microsoft ARM64 retail ESD using our native
-ARM64 JIT (`build/winvm`), WinPE DISM (from an unsplit ExFAT `install.wim`), and BCDBOOT.
+Provision a Windows 11 ARM64 GPT NVMe disk and UEFI NVRAM from an installation ISO
+or the original 24H2 ESD. Uses the native ARM64 JIT (`build/winvm`), WinPE DISM,
+and BCDBOOT. The engine was tested with build 26100; newer builds are unverified.
 
 All intermediate and output files stay strictly inside work/.
 """
 
+import argparse
 import os
 import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
+from windows_media import open_iso, select_image, wimtool
 
 ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "work"
@@ -22,6 +24,14 @@ INST_IMG = WORK / "installer_v4.img"
 WIN_IMG = WORK / "windows11.img"
 CODE_FD = WORK / "code.fd"
 VARS_FD = WORK / "vars.fd"
+ISO_MEDIA = None
+BOOT_SOURCE = ESD
+INSTALL_SOURCE = ESD
+BOOT_INDEX = 2
+INSTALL_INDEX = 6
+INSTALLER_MIB = 6400
+BOOT_MIB = 900
+PHASE_TIMEOUT = None
 
 STARTNET_CMD = r"""@echo off
 wpeinit
@@ -185,7 +195,7 @@ def make_custom_boot_wim(dest_boot_wim: Path):
     dest_boot_wim.parent.mkdir(parents=True, exist_ok=True)
     if dest_boot_wim.exists():
         dest_boot_wim.unlink()
-    run(["/opt/homebrew/bin/wimlib-imagex", "export", ESD, "2", dest_boot_wim, "--compress=LZX", "--boot"])
+    run([wimtool(), "export", BOOT_SOURCE, str(BOOT_INDEX), dest_boot_wim, "--compress=LZX", "--boot"])
     snet = WORK / "startnet.cmd"
     unat = WORK / "unattend_panther.xml"
     snet.write_text(STARTNET_CMD.replace("\n", "\r\n"), encoding="utf-8")
@@ -194,21 +204,24 @@ def make_custom_boot_wim(dest_boot_wim: Path):
         f"add '{snet}' '/Windows/System32/startnet.cmd'\n"
         f"add '{unat}' '/Windows/System32/unattend_panther.xml'\n"
     ).encode("utf-8")
-    run(["/opt/homebrew/bin/wimlib-imagex", "update", dest_boot_wim, "1"], input=cmds)
+    run([wimtool(), "update", dest_boot_wim, "1"], input=cmds)
     snet.unlink(missing_ok=True)
     unat.unlink(missing_ok=True)
 
 
 def build_two_partition_installer():
+    # An ISO installer is rebuilt so a previous ISO/index cannot be reused silently.
     marker = WORK / ".installer_exfat_v4"
-    if INST_IMG.exists() and marker.exists():
+    if ISO_MEDIA is not None:
+        marker = WORK / ".installer_iso"
+    if ISO_MEDIA is None and INST_IMG.exists() and marker.exists():
         print(f"[skip] {INST_IMG} already built ({INST_IMG.stat().st_size} bytes)", flush=True)
         return
 
     print("Building 2-partition GPT installer (FAT32 WinPE + ExFAT unsplit install.wim)...", flush=True)
     INST_IMG.unlink(missing_ok=True)
     with open(INST_IMG, "wb") as f:
-        f.truncate(6400 * 1024 * 1024)
+        f.truncate(INSTALLER_MIB * 1024 * 1024)
 
     out = subprocess.check_output(["hdiutil", "attach", "-imagekey", "diskimage-class=CRawDiskImage", "-nomount", str(INST_IMG)], text=True)
     whole_disk = out.strip().splitlines()[0].split()[0]
@@ -216,7 +229,7 @@ def build_two_partition_installer():
     try:
         run([
             "diskutil", "partitionDisk", whole_disk, "GPT",
-            "MS-DOS", "WINPE", "900M",
+            "MS-DOS", "WINPE", f"{BOOT_MIB}M",
             "ExFAT", "WINWIM", "R",
         ])
         pe_root = Path("/Volumes/WINPE")
@@ -228,7 +241,10 @@ def build_two_partition_installer():
         stage_pe = WORK / "stage_pe_v4"
         shutil.rmtree(stage_pe, ignore_errors=True)
         stage_pe.mkdir(parents=True, exist_ok=True)
-        run(["/opt/homebrew/bin/wimlib-imagex", "extract", ESD, "1", "/efi", "/boot", "/bootmgr.efi", f"--dest-dir={stage_pe}"])
+        if ISO_MEDIA is not None:
+            ISO_MEDIA.copy_boot_files(stage_pe)
+        else:
+            run([wimtool(), "extract", ESD, "1", "/efi", "/boot", "/bootmgr.efi", f"--dest-dir={stage_pe}"])
         for item in stage_pe.iterdir():
             dest = pe_root / item.name
             if item.is_dir():
@@ -241,7 +257,7 @@ def build_two_partition_installer():
 
         # Export unsplit Windows 11 Pro (Index 6) directly onto ExFAT WINWIM!
         (wim_root / "sources").mkdir(parents=True, exist_ok=True)
-        run(["/opt/homebrew/bin/wimlib-imagex", "export", ESD, "6", wim_root / "sources" / "install.wim", "--compress=LZX"])
+        run([wimtool(), "export", INSTALL_SOURCE, str(INSTALL_INDEX), wim_root / "sources" / "install.wim", "--compress=LZX"])
     finally:
         subprocess.run(["hdiutil", "detach", whole_disk], check=False)
 
@@ -253,6 +269,7 @@ def build_two_partition_installer():
 
 
 def run_winvm_phase(phase_name: str, extra_args: list[str], screen_png: Path, max_minutes: int):
+    max_minutes = PHASE_TIMEOUT or max_minutes
     cmd_file = WORK / f"prov_{phase_name}.cmds"
     log_file = WORK / f"prov_{phase_name}.log"
     cmd_file.write_text("")
@@ -291,9 +308,9 @@ def run_winvm_phase(phase_name: str, extra_args: list[str], screen_png: Path, ma
     print(f"=== {phase_name} finished cleanly in {int(time.time() - t0)}s! ===", flush=True)
 
 
-def main():
+def provision():
     WORK.mkdir(parents=True, exist_ok=True)
-    if not ESD.exists():
+    if ISO_MEDIA is None and not ESD.exists():
         sys.exit(f"Missing {ESD}")
     if not WINVM.exists():
         sys.exit(f"Missing {WINVM}")
@@ -303,8 +320,7 @@ def main():
     shutil.copyfile("/opt/homebrew/share/qemu/edk2-aarch64-code.fd", CODE_FD)
     shutil.copyfile("/opt/homebrew/share/qemu/edk2-arm-vars.fd", VARS_FD)
 
-    if WIN_IMG.exists():
-        WIN_IMG.unlink()
+    # main() refuses existing VM artifacts before the installer or firmware changes.
     with open(WIN_IMG, "wb") as f:
         f.truncate(32 * 1024 * 1024 * 1024)
 
@@ -315,8 +331,57 @@ def main():
     # Phase 2: Boot installed Windows 11 Pro ARM64 -> specialize -> reboot -> oobeSystem -> AutoLogon Ammaar -> clean shutdown
     run_winvm_phase("phase2_oobe", [], WORK / "prov_phase2.png", max_minutes=60)
     shutil.copyfile(VARS_FD, WORK / "vars_clean.fd")
-    print("SUCCESS: Windows 11 Pro ARM64 provisioned and cleanly shut down!", flush=True)
+    print("SUCCESS: Windows ARM64 provisioned and cleanly shut down!", flush=True)
+
+
+def main():
+    global ISO_MEDIA, BOOT_SOURCE, INSTALL_SOURCE, BOOT_INDEX, INSTALL_INDEX
+    global INSTALLER_MIB, BOOT_MIB, INST_IMG, PHASE_TIMEOUT
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--iso", type=Path, help="ARM64 installation ISO (mounted read-only)")
+    parser.add_argument("--inspect", action="store_true", help="List ISO images only; do not create disks or run Windows")
+    parser.add_argument("--windows-index", type=int, help="Install-image index; defaults to the image named Windows 11 Pro")
+    parser.add_argument("--boot-index", type=int, default=1, help="ISO boot.wim index (default: 1, Windows PE)")
+    parser.add_argument("--phase-timeout-minutes", type=int, help="Override each boot phase timeout for slower hosts")
+    args = parser.parse_args()
+    if args.inspect and not args.iso:
+        parser.error("--inspect requires --iso")
+    if args.phase_timeout_minutes is not None and args.phase_timeout_minutes <= 0:
+        parser.error("--phase-timeout-minutes must be positive")
+    PHASE_TIMEOUT = args.phase_timeout_minutes
+    if not args.inspect:
+        existing = [str(p) for p in (WIN_IMG, CODE_FD, VARS_FD) if p.exists()]
+        if existing:
+            parser.error("Refusing to overwrite existing VM files. Back them up or use a fresh checkout: " + ", ".join(existing))
+    if not args.iso:
+        provision()
+        return
+    with open_iso(args.iso, WORK) as media:
+        print("Boot images:", flush=True)
+        for item in media.boot_catalog:
+            print(item, flush=True)
+        print("Windows editions:", flush=True)
+        for item in media.install_catalog:
+            print(item, flush=True)
+        boot = select_image(media.boot_catalog, index=args.boot_index)
+        install = select_image(media.install_catalog, index=args.windows_index, name="Windows 11 Pro")
+        print(f"Selected {install['name']} (index {install['index']}), build {install['build']}, ARM64.", flush=True)
+        if install["build"] != "26100":
+            print("This build differs from the repository's tested 26100. Boot compatibility is unverified.", flush=True)
+        if args.inspect:
+            return
+        ISO_MEDIA = media
+        BOOT_SOURCE, INSTALL_SOURCE = media.boot, media.install
+        BOOT_INDEX, INSTALL_INDEX = boot["index"], install["index"]
+        BOOT_MIB = 2048
+        # Reserve enough logical space even if exporting an ESD grows substantially.
+        INSTALLER_MIB = BOOT_MIB + max(6400, (install["bytes"] + 1024**2 - 1) // 1024**2 + 1024)
+        INST_IMG = WORK / "installer_iso.img"
+        provision()
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (ValueError, FileNotFoundError, subprocess.CalledProcessError) as error:
+        sys.exit(str(error))
