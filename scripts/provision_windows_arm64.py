@@ -269,7 +269,9 @@ def build_two_partition_installer():
 
 
 def run_winvm_phase(phase_name: str, extra_args: list[str], screen_png: Path, max_minutes: int):
-    max_minutes = PHASE_TIMEOUT or max_minutes
+    # An explicit zero disables the deadline; do not replace it with the default.
+    if PHASE_TIMEOUT is not None:
+        max_minutes = PHASE_TIMEOUT
     cmd_file = WORK / f"prov_{phase_name}.cmds"
     log_file = WORK / f"prov_{phase_name}.log"
     cmd_file.write_text("")
@@ -287,25 +289,35 @@ def run_winvm_phase(phase_name: str, extra_args: list[str], screen_png: Path, ma
         *extra_args,
     ]
     print(f"\n=== Starting {phase_name}: {' '.join(cmd)} ===", flush=True)
-    t0 = time.time()
+    print("Time limit: " + (f"{max_minutes} minutes" if max_minutes else "none"), flush=True)
+    t0 = time.monotonic()
     with open(log_file, "wb") as lf:
         proc = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT)
         next_shot = 15
-        while proc.poll() is None:
-            elapsed = time.time() - t0
-            if elapsed >= next_shot:
-                with open(cmd_file, "a", encoding="utf-8") as cf:
-                    cf.write(f"screenshot {screen_png}\n")
-                st = subprocess.check_output(["du", "-sh", str(WIN_IMG)], text=True).split()[0]
-                print(f"[{phase_name} +{int(elapsed)}s] running (windows11.img={st}, screen={screen_png.name})", flush=True)
-                next_shot += 20
-            if elapsed > max_minutes * 60:
+        try:
+            while proc.poll() is None:
+                elapsed = time.monotonic() - t0
+                if elapsed >= next_shot:
+                    with open(cmd_file, "a", encoding="utf-8") as cf:
+                        cf.write(f"screenshot {screen_png}\n")
+                    st = subprocess.check_output(["du", "-sh", str(WIN_IMG)], text=True).split()[0]
+                    print(f"[{phase_name} +{int(elapsed)}s] running (windows11.img={st}, screen={screen_png.name})", flush=True)
+                    next_shot += 20
+                if max_minutes and elapsed > max_minutes * 60:
+                    raise TimeoutError(f"{phase_name} exceeded {max_minutes} minutes")
+                time.sleep(2)
+            if proc.returncode != 0:
+                raise RuntimeError(f"{phase_name} exited with code {proc.returncode}; check {log_file}")
+        finally:
+            # Ensure a timeout or Ctrl+C cannot leave a writer running against the disk.
+            if proc.poll() is None:
                 proc.terminate()
-                raise TimeoutError(f"{phase_name} exceeded {max_minutes} minutes")
-            time.sleep(2)
-        if proc.returncode != 0:
-            raise RuntimeError(f"{phase_name} exited with code {proc.returncode}; check {log_file}")
-    print(f"=== {phase_name} finished cleanly in {int(time.time() - t0)}s! ===", flush=True)
+                try:
+                    proc.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+    print(f"=== {phase_name} finished cleanly in {int(time.monotonic() - t0)}s! ===", flush=True)
 
 
 def provision():
@@ -342,12 +354,12 @@ def main():
     parser.add_argument("--inspect", action="store_true", help="List ISO images only; do not create disks or run Windows")
     parser.add_argument("--windows-index", type=int, help="Install-image index; defaults to the image named Windows 11 Pro")
     parser.add_argument("--boot-index", type=int, default=1, help="ISO boot.wim index (default: 1, Windows PE)")
-    parser.add_argument("--phase-timeout-minutes", type=int, help="Override each boot phase timeout for slower hosts")
+    parser.add_argument("--phase-timeout-minutes", type=int, help="Override each boot phase timeout; 0 disables the deadline")
     args = parser.parse_args()
     if args.inspect and not args.iso:
         parser.error("--inspect requires --iso")
-    if args.phase_timeout_minutes is not None and args.phase_timeout_minutes <= 0:
-        parser.error("--phase-timeout-minutes must be positive")
+    if args.phase_timeout_minutes is not None and args.phase_timeout_minutes < 0:
+        parser.error("--phase-timeout-minutes must be zero or positive")
     PHASE_TIMEOUT = args.phase_timeout_minutes
     if not args.inspect:
         existing = [str(p) for p in (WIN_IMG, CODE_FD, VARS_FD) if p.exists()]
