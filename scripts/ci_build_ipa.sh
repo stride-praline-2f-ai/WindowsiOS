@@ -52,7 +52,7 @@ xcodebuild \
 
 APP=build/DerivedData/Build/Products/Release-iphoneos/WindowsiOS.app
 test -f "$APP/WindowsiOS"
-xcrun lipo -verify_arch arm64 "$APP/WindowsiOS"
+xcrun lipo "$APP/WindowsiOS" -verify_arch arm64
 mkdir -p build/ipa/Payload
 ditto "$APP" build/ipa/Payload/WindowsiOS.app
 (cd build/ipa && zip -qry ../artifacts/WindowsiOS-iPhone-Duo-unsigned.ipa Payload)
