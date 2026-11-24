@@ -143,6 +143,9 @@ final class VMViewModel: ObservableObject {
         case .fullScreen:
             return false
         case .auto:
+            // iPads (including 13-inch M4) do not have a Duo folding hinge.
+            // The old large-portrait fallback classified them as half-screen laptops.
+            if UIDevice.current.userInterfaceIdiom == .pad { return false }
             // Hardware hinge folded into laptop posture (partiallyOpen == 2, or live hinge angle 30°..166°)
             if hingeStatusRaw == 2 {
                 return true

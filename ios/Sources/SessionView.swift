@@ -22,7 +22,12 @@ struct SessionView: View {
                 .frame(width: 0, height: 0)
                 .allowsHitTesting(false)
 
-                if laptopActive {
+                if UIDevice.current.userInterfaceIdiom == .pad {
+                    // iPad Pro: use the full native-size canvas. It has no folding
+                    // hinge, and must not inherit the Duo's half-screen laptop deck.
+                    surfaceStudioOpenLayout(geo: geo)
+                        .transition(.opacity)
+                } else if laptopActive {
                     surfaceLaptopClamshellLayout(geo: geo)
                         .transition(.opacity)
                 } else {
@@ -192,7 +197,23 @@ struct SessionView: View {
             // Sculpted Obsidian-Sapphire Studio Backdrop (eliminates dead-flat black letterbox bars!)
             studioObsidianBackdrop(size: geo.size)
 
-            if isPortrait {
+            if UIDevice.current.userInterfaceIdiom == .pad {
+                // On 13-inch M4 iPad the drawable is the full available window:
+                // 2752x2064 px in landscape at native 2x scale, or an aspect-fit
+                // portion if Stage Manager/window layout provides less space.
+                // Metal keeps the Windows framebuffer's aspect ratio intact.
+                MetalDisplayView(
+                    trackpadMode: $vm.trackpadMode,
+                    rightClickArmed: $vm.rightClickArmed,
+                    keyboardVisible: $vm.systemKeyboardVisible,
+                    onThreeFingerTap: {
+                        withAnimation(.spring(response: 0.25, dampingFraction: 0.86)) {
+                            vm.controlBarVisible.toggle()
+                        }
+                    }
+                )
+                .frame(width: w, height: h)
+            } else if isPortrait {
                 // Unfolded Portrait Studio Canvas: Framed PixelSense Display + Sleek Studio Telemetry & Quick Deck
                 VStack(spacing: 14) {
                     Spacer(minLength: safeTop + (vm.controlBarVisible ? 44 : 8))
