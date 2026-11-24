@@ -412,6 +412,11 @@ static void stream_sync_run(HvHda *d, int s) {
         st->last_ns = now_ns();
         st->rem_num = 0;
         if (s >= HV_HDA_ISS) {
+            /* A restarted stream must never play PCM queued by its predecessor. */
+            atomic_store_explicit(&d->tx_consumed,
+                                  atomic_load_explicit(&d->tx_written, memory_order_acquire),
+                                  memory_order_release);
+            atomic_store_explicit(&d->tx_needs_prefill, 1u, memory_order_release);
             atomic_store_explicit(&d->out_rate_hz, rate_hz, memory_order_release);
             atomic_store_explicit(&d->out_channels, ch, memory_order_release);
             if (d->backend.start_out) d->backend.start_out(d->backend.opaque, ch, rate_hz);
@@ -425,6 +430,8 @@ static void stream_sync_run(HvHda *d, int s) {
                     s, s >= HV_HDA_ISS ? "OUT" : "IN", rate_hz, ch, st->cbl, st->lvi, st->fmt);
     } else if (!want_run && st->running) {
         st->running = 0;
+        if (s >= HV_HDA_ISS)
+            atomic_store_explicit(&d->tx_needs_prefill, 1u, memory_order_release);
         if (s >= HV_HDA_ISS && d->backend.stop_out) d->backend.stop_out(d->backend.opaque);
         if (s < HV_HDA_ISS && d->backend.stop_in) d->backend.stop_in(d->backend.opaque);
         if (hda_log())
@@ -704,19 +711,30 @@ static void on_cfg_write(HvPciDev *pci) {
 
 /* ---- PCM Ring Helpers ---- */
 
-static void tx_ring_push(HvHda *d, const uint8_t *src, uint32_t len, uint8_t amp_l, uint8_t amp_r) {
+/* The guest and CoreAudio run on different threads. Maintain a small
+ * prebuffer so a short guest scheduling stall does not become crackling. */
+#define HDA_OUTPUT_PREFILL_MS 50u
+
+static void tx_ring_push(HvHda *d, const uint8_t *src, uint32_t len,
+                         uint8_t amp_l, uint8_t amp_r, unsigned channels, unsigned sample_bytes) {
     uint64_t w = atomic_load_explicit(&d->tx_written, memory_order_relaxed);
     uint64_t c = atomic_load_explicit(&d->tx_consumed, memory_order_acquire);
-    /* Drop oldest audio if ring would overflow so playback stays low-latency (<150 ms) */
-    uint32_t max_keep = HV_HDA_RING_BYTES / 4u; /* 64 KiB (~340 ms max queue) */
+    unsigned frame_bytes = channels * sample_bytes;
+    if (frame_bytes != 2u && frame_bytes != 4u) frame_bytes = 4u;
+    /* Bound latency after long stalls rather than replaying a backlog. */
+    uint32_t max_keep = HV_HDA_RING_BYTES / 4u;
     if (w - c + len > max_keep) {
         uint64_t drop = (w - c + len) - (max_keep / 2u);
-        drop &= ~3ull;
-        atomic_compare_exchange_strong(&d->tx_consumed, &c, c + drop);
+        drop -= drop % frame_bytes;
+        if (drop && atomic_compare_exchange_strong_explicit(&d->tx_consumed, &c, c + drop,
+                                                             memory_order_acq_rel, memory_order_acquire))
+            atomic_fetch_add_explicit(&d->tx_dropped_bytes, drop, memory_order_relaxed);
     }
 
     int mute_l = (amp_l & 0x80u) != 0, mute_r = (amp_r & 0x80u) != 0;
     int gain_l = amp_l & 0x7fu, gain_r = amp_r & 0x7fu; /* 0x4a = 0 dB */
+    const int mul_l = mute_l ? 0 : (gain_l * 256) / 0x4a;
+    const int mul_r = mute_r ? 0 : (gain_r * 256) / 0x4a;
 
     uint32_t off = 0;
     while (off < len) {
@@ -727,18 +745,19 @@ static void tx_ring_push(HvHda *d, const uint8_t *src, uint32_t len, uint8_t amp
             memset(d->tx_ring + at, 0, n);
         } else {
             memcpy(d->tx_ring + at, src + off, n);
-            if ((mute_l || mute_r || gain_l != 0x4a || gain_r != 0x4a) && (n & 3u) == 0) {
+            /* HDA advertises 16-bit PCM; handle both stereo and mono frame
+             * widths rather than treating two mono samples as stereo. */
+            if (sample_bytes == 2u && channels >= 1u && channels <= 2u &&
+                (mute_l || mute_r || gain_l != 0x4a || gain_r != 0x4a) &&
+                (n % (2u * channels)) == 0) {
                 int16_t *pcm = (int16_t *)(d->tx_ring + at);
-                uint32_t frames = n / 4u;
-                int mul_l = mute_l ? 0 : (gain_l * 256) / 0x4a;
-                int mul_r = mute_r ? 0 : (gain_r * 256) / 0x4a;
-                for (uint32_t f = 0; f < frames; f++) {
-                    int32_t sl = (pcm[f * 2] * mul_l) >> 8;
-                    int32_t sr = (pcm[f * 2 + 1] * mul_r) >> 8;
-                    if (sl > 32767) sl = 32767; else if (sl < -32768) sl = -32768;
-                    if (sr > 32767) sr = 32767; else if (sr < -32768) sr = -32768;
-                    pcm[f * 2] = (int16_t)sl;
-                    pcm[f * 2 + 1] = (int16_t)sr;
+                uint32_t samples = n / 2u;
+                for (uint32_t i = 0; i < samples; i++) {
+                    int mul = (channels == 2u && (i & 1u)) ? mul_r : mul_l;
+                    int32_t v = ((int32_t)pcm[i] * mul) >> 8;
+                    if (v > 32767) v = 32767;
+                    else if (v < -32768) v = -32768;
+                    pcm[i] = (int16_t)v;
                 }
             }
         }
@@ -755,9 +774,24 @@ uint32_t hv_hda_pull_playback(HvHda *d, void *dst, uint32_t bytes) {
     uint64_t c = atomic_load_explicit(&d->tx_consumed, memory_order_relaxed);
     uint64_t w = atomic_load_explicit(&d->tx_written, memory_order_acquire);
     uint32_t avail = (w > c) ? (uint32_t)(w - c) : 0;
-    uint32_t n = avail < bytes ? avail : bytes;
-    n &= ~3u; /* frame-aligned stereo S16LE */
+    uint32_t channels = atomic_load_explicit(&d->out_channels, memory_order_acquire);
+    if (channels != 1u && channels != 2u) channels = 2u;
+    uint32_t frame_bytes = channels * 2u; /* advertised S16LE */
+    uint32_t rate = atomic_load_explicit(&d->out_rate_hz, memory_order_acquire);
+    if (rate < 8000u || rate > 192000u) rate = 48000u;
 
+    if (atomic_load_explicit(&d->tx_needs_prefill, memory_order_acquire)) {
+        uint32_t prefill = (uint32_t)((uint64_t)rate * frame_bytes * HDA_OUTPUT_PREFILL_MS / 1000u);
+        prefill -= prefill % frame_bytes;
+        if (avail < prefill || avail < bytes) {
+            memset(dst, 0, bytes);
+            return 0;
+        }
+        atomic_store_explicit(&d->tx_needs_prefill, 0u, memory_order_release);
+    }
+
+    uint32_t n = avail < bytes ? avail : bytes;
+    n -= n % frame_bytes;
     uint32_t off = 0;
     while (off < n) {
         uint32_t at = (uint32_t)((c + off) % HV_HDA_RING_BYTES);
@@ -766,8 +800,13 @@ uint32_t hv_hda_pull_playback(HvHda *d, void *dst, uint32_t bytes) {
         memcpy((uint8_t *)dst + off, d->tx_ring + at, k);
         off += k;
     }
-    if (n < bytes) memset((uint8_t *)dst + n, 0, bytes - n);
-    atomic_compare_exchange_strong(&d->tx_consumed, &c, c + n);
+    if (n < bytes) {
+        memset((uint8_t *)dst + n, 0, bytes - n);
+        atomic_fetch_add_explicit(&d->tx_underruns, 1u, memory_order_relaxed);
+        atomic_store_explicit(&d->tx_needs_prefill, 1u, memory_order_release);
+    }
+    atomic_compare_exchange_strong_explicit(&d->tx_consumed, &c, c + n,
+                                            memory_order_acq_rel, memory_order_acquire);
     return n;
 }
 
@@ -909,7 +948,7 @@ void hv_hda_poll(HvHda *d) {
             if (s >= HV_HDA_ISS) {
                 /* Output stream (Guest Speaker -> Host CoreAudio) */
                 hv_phys_read(d->m, bdl[idx].addr + seg_off, scratch, step);
-                tx_ring_push(d, scratch, step, d->dac_amp_l, d->dac_amp_r);
+                tx_ring_push(d, scratch, step, d->dac_amp_l, d->dac_amp_r, ch, sb);
                 d->tx_frames_total += step / frame_bytes;
             } else {
                 /* Input stream (Host Microphone -> Guest ADC) */
@@ -944,6 +983,7 @@ HvHda *hv_hda_create(HvMachine *m, HvPcie *bus) {
     d->rx_ring = calloc(1, HV_HDA_RING_BYTES);
     atomic_store(&d->out_rate_hz, 48000u);
     atomic_store(&d->out_channels, 2u);
+    atomic_store(&d->tx_needs_prefill, 1u);
     atomic_store(&d->in_rate_hz, 48000u);
     atomic_store(&d->in_channels, 2u);
     controller_reset(d);

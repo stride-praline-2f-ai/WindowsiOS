@@ -545,10 +545,13 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
     int kbdReady = 0, tabReady = 0;
     uint64_t usbDelivered = 0;
     uint64_t jitUsedBytes = 0, jitCapBytes = 0, jitFullFlushes = 0, wfiTicks = 0;
+    uint64_t audioUnderruns = 0, audioDroppedBytes = 0;
+    uint32_t audioQueuedMs = 0;
     double wfiIdlePct = _lastWfiIdlePct;
     if (running) {
         hv_winvm_usb_stats(&kbdReady, &tabReady, &usbDelivered);
         hv_winvm_engine_stats(&jitUsedBytes, &jitCapBytes, &jitFullFlushes, &wfiTicks);
+        hv_winvm_audio_stats(&audioUnderruns, &audioDroppedBytes, &audioQueuedMs);
         uint64_t nowMach = mach_absolute_time();
         if (_lastMachTicks > 0 && nowMach > _lastMachTicks && wfiTicks >= _lastWfiTicks && _configuredCPUs > 0) {
             double pct = 100.0 * (double)(wfiTicks - _lastWfiTicks) /
@@ -587,6 +590,9 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
         @"usb_kbd_ready: %d\n"
         @"usb_tab_ready: %d\n"
         @"usb_delivered: %llu\n"
+        @"audio_underruns: %llu\n"
+        @"audio_dropped_bytes: %llu\n"
+        @"audio_queued_ms: %u\n"
         @"share_up: %d\n"
         @"oauth_safari: %d\n"
         @"hinge_status: %ld\n"
@@ -609,6 +615,9 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
         kbdReady,
         tabReady,
         usbDelivered,
+        audioUnderruns,
+        audioDroppedBytes,
+        audioQueuedMs,
         running ? hv_winvm_share_up() : 0,
         hv_share_url_handler_enabled(),
         (long)hingeStatus,

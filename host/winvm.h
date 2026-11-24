@@ -47,6 +47,8 @@ void hv_winvm_key_linux(uint16_t code, int down);
 void hv_winvm_tablet(double x_norm, double y_norm, uint8_t buttons, int8_t wheel);
 void hv_winvm_send_ctrl_alt_del(void);
 void hv_winvm_usb_stats(int *kbd_ready, int *tab_ready, uint64_t *delivered);
+/* Playback queue diagnostics. Counters accumulate since VM creation. */
+void hv_winvm_audio_stats(uint64_t *underruns, uint64_t *dropped_bytes, uint32_t *queued_ms);
 void hv_winvm_engine_stats(uint64_t *jit_used_bytes, uint64_t *jit_cap_bytes,
                            uint64_t *jit_full_flushes, uint64_t *wfi_ticks);
 int hv_winvm_share_up(void);

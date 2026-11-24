@@ -116,6 +116,10 @@ typedef struct HvHda {
     _Atomic uint64_t tx_consumed;
     _Atomic uint32_t out_rate_hz;
     _Atomic uint32_t out_channels;
+    /* Real-time-safe playback instrumentation; CoreAudio callback is the only reader. */
+    _Atomic uint32_t tx_needs_prefill;
+    _Atomic uint64_t tx_underruns;
+    _Atomic uint64_t tx_dropped_bytes;
 
     uint8_t *rx_ring; /* Host CoreAudio Mic -> Guest Microphone */
     _Atomic uint64_t rx_written;

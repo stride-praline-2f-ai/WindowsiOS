@@ -39,6 +39,28 @@ static _Atomic(HvFbDisplay *) display_fb;
 static void (*exit_cb)(int reason);
 
 int hv_winvm_share_up(void) { return share_on; }
+
+void hv_winvm_audio_stats(uint64_t *underruns, uint64_t *dropped_bytes, uint32_t *queued_ms) {
+    if (underruns) *underruns = 0;
+    if (dropped_bytes) *dropped_bytes = 0;
+    if (queued_ms) *queued_ms = 0;
+    HvHda *hda = board.hda;
+    if (!hda) return;
+    if (underruns)
+        *underruns = atomic_load_explicit(&hda->tx_underruns, memory_order_relaxed);
+    if (dropped_bytes)
+        *dropped_bytes = atomic_load_explicit(&hda->tx_dropped_bytes, memory_order_relaxed);
+    if (queued_ms) {
+        uint64_t w = atomic_load_explicit(&hda->tx_written, memory_order_acquire);
+        uint64_t c = atomic_load_explicit(&hda->tx_consumed, memory_order_acquire);
+        uint32_t rate = atomic_load_explicit(&hda->out_rate_hz, memory_order_acquire);
+        uint32_t channels = atomic_load_explicit(&hda->out_channels, memory_order_acquire);
+        uint32_t bytes_sec = rate * channels * 2u;
+        if (bytes_sec && w > c)
+            *queued_ms = (uint32_t)((w - c) * 1000u / bytes_sec);
+    }
+}
+
 HvMachine *hv_winvm_machine(void) { return &m; }
 HvWinVirt *hv_winvm_board(void) { return &board; }
 

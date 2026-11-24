@@ -130,7 +130,10 @@ final class MetalCanvasUIView: UIView, UIKeyInput {
     }
 
     private func updateDrawableScale() {
-        let scale = window?.screen.scale ?? UIScreen.main.scale
+        let screen = window?.screen ?? UIScreen.main
+        // iPad Pro uses native Retina pixel density when rendering the full
+        // Windows desktop. Keep the Duo's existing display-scale behaviour.
+        let scale = UIDevice.current.userInterfaceIdiom == .pad ? screen.nativeScale : screen.scale
         contentScaleFactor = scale
         metalLayer.contentsScale = scale
         let w = max(1.0, bounds.width * scale)
