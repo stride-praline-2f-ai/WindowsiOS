@@ -80,3 +80,62 @@ jobs:
             work/ios_deps_build/*.log
           if-no-files-found: ignore
           retention-days: 7
+
+  netkvm-driver-disk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Install filesystem and ISO extraction tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends p7zip-full mtools
+
+      - name: Download upstream signed VirtIO drivers
+        run: |
+          curl --fail --location --retry 3 --retry-delay 2 --connect-timeout 30 \
+            "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso" \
+            --output /tmp/virtio-win.iso
+          test -s /tmp/virtio-win.iso
+          ls -lh /tmp/virtio-win.iso
+
+      - name: Extract only NetKVM Windows 11 ARM64
+        run: |
+          mkdir -p /tmp/virtio-extract
+          7z x -y -o/tmp/virtio-extract /tmp/virtio-win.iso "NetKVM/w11/ARM64/*"
+          SRC=/tmp/virtio-extract/NetKVM/w11/ARM64
+          test -f "$SRC/netkvm.inf"
+          test -f "$SRC/netkvm.sys"
+          test -f "$SRC/netkvm.cat"
+          ls -lh "$SRC"
+
+      - name: Create FAT32 driver NVMe disk with MBR partition
+        run: |
+          mkdir -p build/driver-disk
+          python3 - <<'PY'
+          import struct
+          p = "build/driver-disk/netkvm-driver.img"
+          sectors = (64 * 1024 * 1024) // 512
+          start = 2048
+          with open(p, "wb") as f:
+              f.truncate(sectors * 512)
+          with open(p, "r+b") as f:
+              f.seek(446)
+              f.write(bytes([0x00, 0x00, 0x02, 0x00, 0x0C, 0xFE, 0xFF, 0xFF]))
+              f.write(struct.pack("<II", start, sectors - start))
+              f.seek(510)
+              f.write(bytes([0x55, 0xAA]))
+          PY
+          IMG="build/driver-disk/netkvm-driver.img@@1048576"
+          mformat -i "$IMG" -F -v NETKVM ::
+          mcopy -i "$IMG" /tmp/virtio-extract/NetKVM/w11/ARM64/* ::
+          mdir -i "$IMG" ::
+          sha256sum build/driver-disk/netkvm-driver.img > build/driver-disk/SHA256SUMS
+
+      - name: Upload driver disk image
+        uses: actions/upload-artifact@v4
+        with:
+          name: NetKVM-Win11-ARM64-offline-driver
+          path: build/driver-disk/
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 7
