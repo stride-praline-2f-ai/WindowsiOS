@@ -24,10 +24,12 @@ final class PointerController {
         WinIOSBridge.shared.sendTabletNormalizedX(cursorX, y: cursorY, buttons: heldButtons | extraButtons, wheel: 0)
     }
 
-    func moveRelative(dxPoints: CGFloat, dyPoints: CGFloat, padWidth: CGFloat, padHeight: CGFloat, extraButtons: UInt8 = 0) {
+    func moveRelative(dxPoints: CGFloat, dyPoints: CGFloat, padWidth: CGFloat, padHeight: CGFloat,
+                      extraButtons: UInt8 = 0, boost: Double = 1.0) {
         // Natural laptop trackpad ballistics: fine pixel control at low speed, brisk traversal on flicks.
+        // boost: a faster pointer for a pad bigger than the deck's (the finger trackpad on the screen).
         let dist = hypot(Double(dxPoints), Double(dyPoints))
-        let gain = min(2.35, 0.95 + dist * 0.055)
+        let gain = min(2.35, 0.95 + dist * 0.055) * boost
         let refW = Double(max(220.0, padWidth))
         let refH = Double(max(130.0, padHeight))
         let dx = (Double(dxPoints) / refW) * gain
