@@ -527,6 +527,16 @@ struct SessionView: View {
                     vm.toggleOAuthBrowserMode()
                 }
 
+                if UIDevice.current.userInterfaceIdiom == .phone {
+                    studioPillItem(
+                        icon: duoCoolMode ? "snowflake" : "bolt.fill",
+                        label: duoCoolMode ? "Cool next boot" : "Speed next boot",
+                        active: duoCoolMode
+                    ) {
+                        duoCoolMode.toggle()
+                    }
+                }
+
                 studioPillItem(icon: "keyboard", label: "Keys", active: vm.systemKeyboardVisible) {
                     vm.systemKeyboardVisible.toggle()
                 }

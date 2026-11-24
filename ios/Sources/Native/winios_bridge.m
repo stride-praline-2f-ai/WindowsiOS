@@ -198,9 +198,10 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
     NSProcessInfo *info = [NSProcessInfo processInfo];
     NSInteger thermal = info.thermalState;
     BOOL lowPower = info.lowPowerModeEnabled;
-    NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
-    BOOL coolEnabled = [prefs objectForKey:@"winios.duoCoolMode"] == nil ||
-                       [prefs boolForKey:@"winios.duoCoolMode"];
+    /* Read the mode captured at VM start. The user's next-boot preference
+     * may change in the toolbar while Windows is running. */
+    const char *mode = getenv("HV_DUO_COOL_MODE");
+    BOOL coolEnabled = mode && strcmp(mode, "0") != 0;
     CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
     int next = _duoCoolLevel;
 
