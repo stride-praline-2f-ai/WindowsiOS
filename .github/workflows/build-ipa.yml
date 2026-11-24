@@ -28,7 +28,7 @@ permissions:
 
 jobs:
   ipa:
-    runs-on: xcode-27
+    runs-on: macos-26
     timeout-minutes: 90
     defaults:
       run:
