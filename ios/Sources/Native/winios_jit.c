@@ -93,9 +93,28 @@ static void prealloc_ledger_exempt_ram(void) {
     size_t len = sizeof phys_mem;
     sysctlbyname("hw.memsize", &phys_mem, &len, NULL, 0);
     uint64_t phys_mb = phys_mem >> 20;
-    /* Size Guest RAM to fit comfortably within iOS 36-bit user VA ceiling alongside TXM JIT RX/RW + JIT tables */
-    static const uint64_t candidates_mb[] = {4608, 4096, 3584, 3072, 2560, 2048};
-    for (size_t i = 0; i < sizeof(candidates_mb) / sizeof(candidates_mb[0]); i++) {
+    /* iPad Pro M4 1/2 TB configurations have 16 GiB of unified memory.
+     * Prefer 6 GiB guest RAM on these models, while retaining at least
+     * 8 GiB of physical headroom for iPadOS, Metal, JIT, and other apps.
+     * The existing iPhone/8 GiB iPad limit stays untouched.  Every size
+     * is only a candidate: the ledger-exempt VM allocation can fail,
+     * in which case we fall back rather than assuming the memory exists.
+     * Do not request all 16 GiB just because the iPad advertises it. */
+    char machine[64] = {0};
+    size_t machine_len = sizeof machine;
+    bool m4_13_ipad = sysctlbyname("hw.machine", machine, &machine_len, NULL, 0) == 0 &&
+                      (!strcmp(machine, "iPad16,5") || !strcmp(machine, "iPad16,6"));
+    bool high_mem_ipad = m4_13_ipad && phys_mb >= 14u * 1024u;
+    static const uint64_t default_candidates_mb[] = {4608, 4096, 3584, 3072, 2560, 2048};
+    static const uint64_t m4_16gb_candidates_mb[] = {6144, 5632, 5120, 4608, 4096, 3584, 3072, 2560, 2048};
+    const uint64_t *candidates_mb = high_mem_ipad ? m4_16gb_candidates_mb : default_candidates_mb;
+    size_t n_candidates = high_mem_ipad
+        ? sizeof(m4_16gb_candidates_mb) / sizeof(m4_16gb_candidates_mb[0])
+        : sizeof(default_candidates_mb) / sizeof(default_candidates_mb[0]);
+    WINIOS_LOG("RAM policy: model=%s physical=%llu MiB profile=%s",
+               machine, (unsigned long long)phys_mb,
+               high_mem_ipad ? "M4-16GB 6GiB" : "compatible");
+    for (size_t i = 0; i < n_candidates; i++) {
         uint64_t mb = candidates_mb[i];
         if (phys_mb > 0 && mb + 2560 > phys_mb) continue;
         uint8_t *p = hv_alloc_no_footprint(mb << 20);
