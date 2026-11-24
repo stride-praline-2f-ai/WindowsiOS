@@ -53,6 +53,10 @@ void hv_winvm_engine_stats(uint64_t *jit_used_bytes, uint64_t *jit_cap_bytes,
                            uint64_t *jit_full_flushes, uint64_t *wfi_ticks);
 int hv_winvm_share_up(void);
 
+/* Duo-specific CPU/display heat policy: 0 balanced, 1 cooling, 2 critical. */
+void hv_winvm_set_duo_cool_level(int level);
+int hv_winvm_get_duo_cool_level(void);
+
 HvMachine *hv_winvm_machine(void);
 HvWinVirt *hv_winvm_board(void);
 const char *hv_winvm_reason_name(int reason);
