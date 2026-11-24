@@ -26,6 +26,12 @@ on:
 permissions:
   contents: read
 
+# Avoid old queued Xcode 27 builds consuming the runner before the newest
+# committed version of the Duo app. Other branches remain independent.
+concurrency:
+  group: windowsios-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   ipa:
     runs-on: xcode-27
