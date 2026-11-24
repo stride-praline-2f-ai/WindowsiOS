@@ -6,6 +6,7 @@ struct SessionView: View {
     @ObservedObject var vm: VMViewModel
     private let uiHaptic = UIImpactFeedbackGenerator(style: .light)
     @State private var isPastingClipboard = false
+    @AppStorage("winios.duoCoolMode") private var duoCoolMode = true
 
     var body: some View {
         GeometryReader { geo in
@@ -657,6 +658,18 @@ struct SessionView: View {
                 Text("\(vm.availableMemoryMB) MB HEADROOM")
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.60))
+            }
+
+            if UIDevice.current.userInterfaceIdiom == .phone && !vm.isUnpacking {
+                Toggle(isOn: $duoCoolMode) {
+                    Label("Cool Mode (next boot)", systemImage: "snowflake")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.85))
+                }
+                .tint(.cyan)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
             }
 
             if !vm.isUnpacking {

@@ -197,13 +197,16 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
     NSProcessInfo *info = [NSProcessInfo processInfo];
     NSInteger thermal = info.thermalState;
     BOOL lowPower = info.lowPowerModeEnabled;
+    BOOL coolEnabled = [NSUserDefaults.standardUserDefaults objectForKey:@"winios.duoCoolMode"] == nil ||
+                       [NSUserDefaults.standardUserDefaults boolForKey:@"winios.duoCoolMode"];
     CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
     int next = _duoCoolLevel;
 
     if (thermal >= NSProcessInfoThermalStateCritical) {
         next = 2;
         _duoCalmSince = 0;
-    } else if (thermal >= NSProcessInfoThermalStateSerious || lowPower) {
+    } else if (thermal >= NSProcessInfoThermalStateSerious || lowPower ||
+               (coolEnabled && thermal >= NSProcessInfoThermalStateFair)) {
         next = 1;
         _duoCalmSince = 0;
     } else if (_duoCoolLevel != 0) {
@@ -459,8 +462,16 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
 - (void)startConfiguredVMInDirectory:(NSString *)dir {
     if (_vmRunning) return;
     /* Opt in to the balanced A20 Pro scheduling profile only on iPhone Duo. */
-    if (winios_is_iphone_duo()) setenv("HV_DUO_A20_PROFILE", "1", 1);
-    else unsetenv("HV_DUO_A20_PROFILE");
+    if (winios_is_iphone_duo()) {
+        setenv("HV_DUO_A20_PROFILE", "1", 1);
+        NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
+        BOOL coolEnabled = [prefs objectForKey:@"winios.duoCoolMode"] == nil ||
+                           [prefs boolForKey:@"winios.duoCoolMode"];
+        setenv("HV_DUO_COOL_MODE", coolEnabled ? "1" : "0", 1);
+    } else {
+        unsetenv("HV_DUO_A20_PROFILE");
+        unsetenv("HV_DUO_COOL_MODE");
+    }
     [self configureAudioSessionAndMicPermission];
 
     WinIosDualMapping jit = winios_jit_mapping();
@@ -626,6 +637,8 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
     NSInteger thermalState = powerInfo.thermalState;
     BOOL lowPowerMode = powerInfo.lowPowerModeEnabled;
     int coolingLevel = running ? hv_winvm_get_duo_cool_level() : 0;
+    const char *configuredCoolMode = getenv("HV_DUO_COOL_MODE");
+    int coolModeEnabled = configuredCoolMode && strcmp(configuredCoolMode, "0") != 0;
     double wfiIdlePct = _lastWfiIdlePct;
     if (running) {
         hv_winvm_usb_stats(&kbdReady, &tabReady, &usbDelivered);
@@ -676,6 +689,7 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
         @"thermal_state: %ld\n"
         @"low_power_mode: %d\n"
         @"duo_cooling_level: %d\n"
+        @"duo_cool_mode: %d\n"
         @"share_up: %d\n"
         @"oauth_safari: %d\n"
         @"hinge_status: %ld\n"
@@ -705,6 +719,7 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
         (long)thermalState,
         lowPowerMode ? 1 : 0,
         coolingLevel,
+        coolModeEnabled,
         running ? hv_winvm_share_up() : 0,
         hv_share_url_handler_enabled(),
         (long)hingeStatus,

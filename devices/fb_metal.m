@@ -54,6 +54,7 @@ static NSString *const kFbShaderSource =
     uint64_t lastHash;
     CGSize lastDrawableSize;
     BOOL duoBalancedDisplay;
+    BOOL duoCoolDisplay;
     BOOL idleRefresh;
     uint32_t unchangedTicks;
     uint32_t scheduledHz;
@@ -71,6 +72,8 @@ static NSString *const kFbShaderSource =
         fb = display;
         lock = OS_UNFAIR_LOCK_INIT;
         duoBalancedDisplay = getenv("HV_DUO_A20_PROFILE") != NULL;
+        const char *cool = getenv("HV_DUO_COOL_MODE");
+        duoCoolDisplay = duoBalancedDisplay && cool && strcmp(cool, "0") != 0;
         device = MTLCreateSystemDefaultDevice();
         if (device) {
             queue = [device newCommandQueue];
@@ -129,7 +132,8 @@ static NSString *const kFbShaderSource =
     if (!timer) return;
     int level = duoBalancedDisplay ?
         atomic_load_explicit(&g_duo_cool_level, memory_order_acquire) : 0;
-    uint32_t hz = level >= 2 ? 20u : (level >= 1 || idleRefresh) ? 30u : 60u;
+    uint32_t hz = level >= 2 ? 20u :
+        (level >= 1 || idleRefresh) ? 30u : (duoCoolDisplay ? 40u : 60u);
     if (scheduledHz == hz) return;
     dispatch_source_set_timer(timer, DISPATCH_TIME_NOW,
                               NSEC_PER_SEC / hz, 2 * NSEC_PER_MSEC);

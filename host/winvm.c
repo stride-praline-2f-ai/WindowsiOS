@@ -114,7 +114,11 @@ static qos_class_t guest_vcpu_qos(unsigned i) {
     const char *q = getenv("HV_QOS");
 #if TARGET_OS_IPHONE
     const int duo = getenv("HV_DUO_A20_PROFILE") != NULL;
-    qos_class_t c = duo && i >= 2 ? QOS_CLASS_DEFAULT : QOS_CLASS_USER_INITIATED;
+    const char *coolSetting = getenv("HV_DUO_COOL_MODE");
+    int coolByDefault = coolSetting && strcmp(coolSetting, "0") != 0;
+    qos_class_t c = duo && i >= 2
+        ? (coolByDefault ? QOS_CLASS_UTILITY : QOS_CLASS_DEFAULT)
+        : QOS_CLASS_USER_INITIATED;
     if (duo) {
         int level = atomic_load_explicit(&duo_cool_level, memory_order_acquire);
         if (level >= 1 && i >= 2) c = QOS_CLASS_UTILITY;
