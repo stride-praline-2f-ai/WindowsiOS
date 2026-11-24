@@ -12,6 +12,12 @@
 
 #include "fb_display.h"
 
+static _Atomic int g_duo_cool_level;
+
+void hv_fb_metal_set_duo_cool_level(int level) {
+    atomic_store_explicit(&g_duo_cool_level, level, memory_order_release);
+}
+
 static NSString *const kFbShaderSource =
     @"#include <metal_stdlib>\n"
      "using namespace metal;\n"
@@ -50,10 +56,12 @@ static NSString *const kFbShaderSource =
     BOOL duoBalancedDisplay;
     BOOL idleRefresh;
     uint32_t unchangedTicks;
+    uint32_t scheduledHz;
 }
 - (instancetype)initWithDisplay:(HvFbDisplay *)display;
 - (void)setTargetLayer:(CAMetalLayer *)newLayer;
 - (void)tick;
+- (void)updateRefreshPolicy;
 @end
 
 @implementation HvFbMetalPresenter
@@ -86,10 +94,8 @@ static NSString *const kFbShaderSource =
     lastHash = 0;
     lastDrawableSize = CGSizeZero;
     unchangedTicks = 0;
-    if (timer && idleRefresh) {
-        dispatch_source_set_timer(timer, DISPATCH_TIME_NOW, NSEC_PER_SEC / 60, 2 * NSEC_PER_MSEC);
-        idleRefresh = NO;
-    }
+    idleRefresh = NO;
+    [self updateRefreshPolicy];
     if (layer && device) {
         dispatch_block_t cfg = ^{
             newLayer.device = self->device;
@@ -103,6 +109,7 @@ static NSString *const kFbShaderSource =
             dispatch_queue_t q = dispatch_queue_create("me.ammaar.windowsios.fbmetal", DISPATCH_QUEUE_SERIAL);
             timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, q);
             dispatch_source_set_timer(timer, DISPATCH_TIME_NOW, NSEC_PER_SEC / 60, 2 * NSEC_PER_MSEC);
+            scheduledHz = 60;
             __weak HvFbMetalPresenter *weakSelf = self;
             dispatch_source_set_event_handler(timer, ^{
                 [weakSelf tick];
@@ -112,8 +119,21 @@ static NSString *const kFbShaderSource =
     } else if (!layer && timer) {
         dispatch_source_cancel(timer);
         timer = nil;
+        scheduledHz = 0;
     }
     os_unfair_lock_unlock(&lock);
+}
+
+/* Rate limits drawing to the iPhone display, not Windows simulation frames. */
+- (void)updateRefreshPolicy {
+    if (!timer) return;
+    int level = duoBalancedDisplay ?
+        atomic_load_explicit(&g_duo_cool_level, memory_order_acquire) : 0;
+    uint32_t hz = level >= 2 ? 20u : (level >= 1 || idleRefresh) ? 30u : 60u;
+    if (scheduledHz == hz) return;
+    dispatch_source_set_timer(timer, DISPATCH_TIME_NOW,
+                              NSEC_PER_SEC / hz, 2 * NSEC_PER_MSEC);
+    scheduledHz = hz;
 }
 
 static uint64_t quick_frame_hash(const uint8_t *px, uint32_t w, uint32_t h, uint32_t stride) {
@@ -137,6 +157,7 @@ static uint64_t quick_frame_hash(const uint8_t *px, uint32_t w, uint32_t h, uint
         if (hv_fb_display_get_frame(fb, &px, &w, &h, &stride) != 0) return;
 
         os_unfair_lock_lock(&lock);
+        [self updateRefreshPolicy];
         CAMetalLayer *curLayer = layer;
         if (!curLayer || !device || !pipeline || !queue) {
             os_unfair_lock_unlock(&lock);
@@ -156,16 +177,16 @@ static uint64_t quick_frame_hash(const uint8_t *px, uint32_t w, uint32_t h, uint
              * reduce wasted CPU wakeups and framebuffer hashing to 30 Hz;
              * return to 60 Hz on the first changed frame. */
             if (duoBalancedDisplay && ++unchangedTicks >= 60 && !idleRefresh && timer) {
-                dispatch_source_set_timer(timer, DISPATCH_TIME_NOW, NSEC_PER_SEC / 30, 2 * NSEC_PER_MSEC);
                 idleRefresh = YES;
+                [self updateRefreshPolicy];
             }
             os_unfair_lock_unlock(&lock);
             return;
         }
         unchangedTicks = 0;
         if (idleRefresh && timer) {
-            dispatch_source_set_timer(timer, DISPATCH_TIME_NOW, NSEC_PER_SEC / 60, 2 * NSEC_PER_MSEC);
             idleRefresh = NO;
+            [self updateRefreshPolicy];
         }
 
         if (!texture || texW != w || texH != h) {
