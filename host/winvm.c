@@ -23,9 +23,6 @@
 static HvMachine m;
 static HvCpu cpus[HV_MAX_CPUS];
 static pthread_t sec_threads[HV_MAX_CPUS];
-static pthread_mutex_t vcpu_qos_mu = PTHREAD_MUTEX_INITIALIZER;
-static pthread_t cpu0_handle;
-static int cpu0_handle_live;
 static _Atomic int duo_cool_level;
 static int ncpus = 1;
 static HvWinVirt board;
@@ -156,20 +153,24 @@ int hv_winvm_get_duo_cool_level(void) {
     return atomic_load_explicit(&duo_cool_level, memory_order_acquire);
 }
 
+/* Runs on the guest CPU's own thread at the existing interrupt/timer
+ * checkpoint. The iPhone SDK exposes the self-QoS API but not a cross-thread
+ * setter; do not rely on private pthread symbols. */
+void hv_winvm_cpu_qos_tick(unsigned index) {
+    static __thread int last_applied_level = -1;
+    int level = atomic_load_explicit(&duo_cool_level, memory_order_acquire);
+    if (last_applied_level == level) return;
+    (void)pthread_set_qos_class_self_np(guest_vcpu_qos(index), 0);
+    last_applied_level = level;
+}
+
 void hv_winvm_set_duo_cool_level(int level) {
     if (level < 0) level = 0;
     if (level > 2) level = 2;
     int old = atomic_exchange_explicit(&duo_cool_level, level, memory_order_acq_rel);
     hv_fb_metal_set_duo_cool_level(level);
-    if (old == level || !getenv("HV_DUO_A20_PROFILE") || getenv("HV_QOS")) return;
-    pthread_mutex_lock(&vcpu_qos_mu);
-    if (cpu0_handle_live)
-        (void)pthread_set_qos_class_np(cpu0_handle, guest_vcpu_qos(0), 0);
-    for (int i = 1; i < ncpus; i++) {
-        if (sec_threads[i])
-            (void)pthread_set_qos_class_np(sec_threads[i], guest_vcpu_qos((unsigned)i), 0);
-    }
-    pthread_mutex_unlock(&vcpu_qos_mu);
+    if (old != level && getenv("HV_DUO_A20_PROFILE"))
+        hv_machine_kick_all(&m);
 }
 
 void hv_winvm_set_display_layer(void *layer) {
@@ -303,11 +304,9 @@ static void spawn_secondaries(void) {
     pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr, 8u << 20);
-    pthread_mutex_lock(&vcpu_qos_mu);
     for (int i = 1; i < ncpus; i++) {
         pthread_create(&sec_threads[i], &attr, secondary_thread, &cpus[i]);
     }
-    pthread_mutex_unlock(&vcpu_qos_mu);
     pthread_attr_destroy(&attr);
 }
 
@@ -318,14 +317,9 @@ static void join_secondaries(void) {
     }
     hv_machine_kick_all(&m);
     for (int i = 1; i < ncpus; i++) {
-        pthread_mutex_lock(&vcpu_qos_mu);
-        pthread_t worker = sec_threads[i];
-        pthread_mutex_unlock(&vcpu_qos_mu);
-        if (worker) {
-            pthread_join(worker, NULL);
-            pthread_mutex_lock(&vcpu_qos_mu);
+        if (sec_threads[i]) {
+            pthread_join(sec_threads[i], NULL);
             sec_threads[i] = 0;
-            pthread_mutex_unlock(&vcpu_qos_mu);
         }
     }
 }
@@ -383,9 +377,6 @@ static void *cpu0_thread(void *unused) {
     int r = hv_winvm_run_cpu0();
     atomic_store(&stop_requested, 1);
     join_secondaries();
-    pthread_mutex_lock(&vcpu_qos_mu);
-    cpu0_handle_live = 0;
-    pthread_mutex_unlock(&vcpu_qos_mu);
     if (exit_cb) exit_cb(r);
     return NULL;
 }
@@ -401,14 +392,8 @@ void hv_winvm_start(int spawn_cpu0, void (*on_exit)(int reason)) {
         pthread_attr_init(&attr);
         pthread_attr_setstacksize(&attr, 8u << 20);
         pthread_t ct;
-        pthread_mutex_lock(&vcpu_qos_mu);
-        int launched = pthread_create(&ct, &attr, cpu0_thread, NULL);
-        if (!launched) {
-            cpu0_handle = ct;
-            cpu0_handle_live = 1;
-        }
-        pthread_mutex_unlock(&vcpu_qos_mu);
-        if (!launched) pthread_detach(ct);
+        pthread_create(&ct, &attr, cpu0_thread, NULL);
+        pthread_detach(ct);
         pthread_attr_destroy(&attr);
     }
 }
