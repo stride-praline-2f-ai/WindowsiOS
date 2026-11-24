@@ -17,7 +17,7 @@ jobs:
       - name: Install filesystem and ISO extraction tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends p7zip-full mtools
+          sudo apt-get install -y --no-install-recommends p7zip-full mtools gdisk
 
       - name: Download upstream signed VirtIO drivers
         run: |
@@ -37,28 +37,67 @@ jobs:
           test -f "$SRC/netkvm.cat"
           ls -lh "$SRC"
 
-      - name: Create FAT32 driver NVMe disk with MBR partition
+      - name: Create GPT driver disk with verified FAT32 partition
         run: |
+          set -euo pipefail
           mkdir -p build/driver-disk
+          DISK="build/driver-disk/netkvm-driver.img"
+          PART="/tmp/netkvm-fat32-partition.img"
+          truncate -s 64M "$DISK"
+
+          # Windows ARM64 recognises a Microsoft Basic Data partition in GPT.
+          # Format the *partition separately*: never let the FAT formatter
+          # overwrite the primary or backup GPT partition tables.
+          sgdisk --zap-all "$DISK"
+          sgdisk --clear \
+            --new=1:2048:0 \
+            --typecode=1:0700 \
+            --change-name=1:NETKVM "$DISK"
+          sgdisk --verify "$DISK"
+          sgdisk --print "$DISK"
+
           python3 - <<'PY'
+          from pathlib import Path
           import struct
-          p = "build/driver-disk/netkvm-driver.img"
-          sectors = (64 * 1024 * 1024) // 512
-          start = 2048
-          with open(p, "wb") as f:
-              f.truncate(sectors * 512)
-          with open(p, "r+b") as f:
-              f.seek(446)
-              f.write(bytes([0x00, 0x00, 0x02, 0x00, 0x0C, 0xFE, 0xFF, 0xFF]))
-              f.write(struct.pack("<II", start, sectors - start))
-              f.seek(510)
-              f.write(bytes([0x55, 0xAA]))
+          d = Path("build/driver-disk/netkvm-driver.img").read_bytes()
+          assert d[510:512] == b"\\x55\\xaa", "protective MBR is missing"
+          assert d[450] == 0xee, "protective MBR partition type not GPT"
+          assert d[512:520] == b"EFI PART", "primary GPT header missing"
+          e = d[1024:1152]
+          start, last = struct.unpack_from("<QQ", e, 32)
+          assert start == 2048 and last > start, (start, last)
+          nbytes = (last - start + 1) * 512
+          Path("/tmp/netkvm-fat32-partition.img").write_bytes(bytes(nbytes))
+          Path("/tmp/netkvm-lba.txt").write_text(str(start))
+          print(f"GPT partition: LBA {start} through {last}; {nbytes} bytes")
           PY
-          IMG="build/driver-disk/netkvm-driver.img@@1048576"
-          mformat -i "$IMG" -F -v NETKVM ::
-          mcopy -i "$IMG" /tmp/virtio-extract/NetKVM/w11/ARM64/* ::
-          mdir -i "$IMG" ::
-          sha256sum build/driver-disk/netkvm-driver.img > build/driver-disk/SHA256SUMS
+
+          mformat -i "$PART" -F -v NETKVM ::
+          # Only package needed signed driver files, not bulky PDB files.
+          SRC=/tmp/virtio-extract/NetKVM/w11/ARM64
+          mcopy -i "$PART" "$SRC/netkvm.inf" "$SRC/netkvm.sys" "$SRC/netkvm.cat" "$SRC/netkvmco.exe" "$SRC/netkvmp.exe" ::
+          mdir -i "$PART" ::
+          START=$(cat /tmp/netkvm-lba.txt)
+          dd if="$PART" of="$DISK" bs=512 seek="$START" conv=notrunc status=none
+
+          # Verify both partition tables survive formatting and payload copy.
+          sgdisk --verify "$DISK"
+          python3 - <<'PY'
+          from pathlib import Path
+          import struct
+          d = Path("build/driver-disk/netkvm-driver.img").read_bytes()
+          assert d[:0] == b""
+          assert d[510:512] == b"\\x55\\xaa"
+          assert d[512:520] == b"EFI PART"
+          e = d[1024:1152]
+          start, end = struct.unpack_from("<QQ", e, 32)
+          off = start * 512
+          assert d[off+510:off+512] == b"\\x55\\xaa", "FAT32 boot signature missing"
+          assert d[off+82:off+90] == b"FAT32   ", "FAT32 BPB missing"
+          assert d[off+71:off+82].startswith(b"NETKVM"), "volume label missing"
+          print(f"Verified GPT disk and FAT32 filesystem: first LBA {start}, last LBA {end}")
+          PY
+          sha256sum "$DISK" > build/driver-disk/SHA256SUMS
 
       - name: Upload driver disk image
         uses: actions/upload-artifact@v4
