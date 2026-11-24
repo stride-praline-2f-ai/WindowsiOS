@@ -234,6 +234,7 @@ int hv_winvm_create(const HvWinVmConfig *c, char *err, size_t errlen) {
     size_t jit = c->jit_bytes ? c->jit_bytes : ((size_t)768 << 20);
     int r = c->jit_rx ? hv_machine_init_jit(&m, c->jit_rx, c->jit_rw, jit) : hv_machine_init(&m, jit);
     if (r != 0) return fail(err, errlen, "Cannot initialize ARM64 JIT region (is JIT active?).");
+    m.cpu_qos_tick = hv_winvm_cpu_qos_tick;
 
 #if TARGET_OS_IPHONE
     /* Defer synchronous guest NVMe FLUSH fsyncs on iOS APFS NAND; explicit host checkpoints call hv_disk_sync(). */

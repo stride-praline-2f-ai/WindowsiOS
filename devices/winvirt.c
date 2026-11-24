@@ -101,12 +101,9 @@ static uint64_t tick_locked(HvMachine *m, HvCpu *cpu) {
     return deadline;
 }
 
-/* Unit tests can link winvirt without the iOS host. In a full VM the strong
- * implementation changes each vCPU's own QoS at a safe scheduling checkpoint. */
-__attribute__((weak)) void hv_winvm_cpu_qos_tick(unsigned index) { (void)index; }
-
+/* The host supplies its own scheduler policy. Tests leave the hook null. */
 static uint64_t tick(HvMachine *m, HvCpu *cpu) {
-    hv_winvm_cpu_qos_tick(cpu->index);
+    if (m->cpu_qos_tick) m->cpu_qos_tick(cpu->index);
     if (cpu->index != 0) return hv_timer_update(((HvWinVirt *)m->tick_opaque)->gic, cpu);
     hv_dev_lock(m);
     uint64_t deadline = tick_locked(m, cpu);

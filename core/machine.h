@@ -213,6 +213,9 @@ typedef struct HvMachine {
        Returns the host time (mach_absolute_time units) of the next timer event, or 0. */
     uint64_t (*tick)(struct HvMachine *m, HvCpu *cpu);
     void *tick_opaque;
+    /* Optional host thread QoS update on that vCPU's own timer tick.
+     * Null for tests or hosts with no adaptive scheduling. */
+    void (*cpu_qos_tick)(unsigned index);
     /* GIC CPU interface system registers (ICC_*_EL1), reg = op0:op1:CRn:CRm:op2. */
     uint64_t (*icc_read)(struct HvMachine *m, HvCpu *cpu, uint32_t reg);
     void (*icc_write)(struct HvMachine *m, HvCpu *cpu, uint32_t reg, uint64_t v);
