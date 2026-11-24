@@ -5,6 +5,7 @@ import UIKit
 struct SessionView: View {
     @ObservedObject var vm: VMViewModel
     private let uiHaptic = UIImpactFeedbackGenerator(style: .light)
+    @State private var isPastingClipboard = false
 
     var body: some View {
         GeometryReader { geo in
@@ -429,6 +430,31 @@ struct SessionView: View {
         .buttonStyle(.plain)
     }
 
+
+    // Windows doesn't share iOS's pasteboard. Type the selected text over the
+    // already-implemented virtual HID keyboard, with press/release ordering.
+    // This intentionally does not send Ctrl+V to an empty Windows clipboard.
+    private func pasteClipboardIntoWindows() {
+        guard vm.isVMRunning, !isPastingClipboard,
+              let text = UIPasteboard.general.string, !text.isEmpty else { return }
+        isPastingClipboard = true
+
+        Task { @MainActor in
+            defer { isPastingClipboard = false }
+            for char in text.prefix(4096) {
+                guard vm.isVMRunning else { break }
+                guard let (usage, shift) = MetalCanvasUIView.asciiToHID(char) else { continue }
+
+                if shift { WinIOSBridge.shared.sendKeyHid(0xe1, down: true) }
+                WinIOSBridge.shared.sendKeyHid(usage, down: true)
+                try? await Task.sleep(for: .milliseconds(40))
+                WinIOSBridge.shared.sendKeyHid(usage, down: false)
+                if shift { WinIOSBridge.shared.sendKeyHid(0xe1, down: false) }
+                try? await Task.sleep(for: .milliseconds(35))
+            }
+        }
+    }
+
     // MARK: - Smoked-Obsidian Surface Studio Floating Command Pill
 
     private func surfaceStudioCommandPill(viewportSize: CGSize) -> some View {
@@ -481,6 +507,12 @@ struct SessionView: View {
 
                 studioPillItem(icon: "keyboard", label: "Keys", active: vm.systemKeyboardVisible) {
                     vm.systemKeyboardVisible.toggle()
+                }
+
+                // Send iOS clipboard text as guest USB HID keystrokes.
+                // Unlike Ctrl+V, this works even when Windows has no network driver.
+                studioPillItem(icon: "doc.on.clipboard", label: "Paste", active: isPastingClipboard) {
+                    pasteClipboardIntoWindows()
                 }
 
                 studioPillItem(
