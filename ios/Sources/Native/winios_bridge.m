@@ -432,6 +432,12 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
     NSString *varsPath = [dir stringByAppendingPathComponent:@"vars.fd"];
     NSString *diskPath = [dir stringByAppendingPathComponent:@"windows11.img"];
 
+    /* Optional offline driver medium. The second NVMe disk is read-only and
+     * only attached when the user places netkvm-driver.img alongside windows11.img.
+     * It never modifies the primary Windows installation or NVRAM. */
+    NSString *driverDiskPath = [dir stringByAppendingPathComponent:@"netkvm-driver.img"];
+    BOOL hasDriverDisk = [[NSFileManager defaultManager] fileExistsAtPath:driverDiskPath];
+
     _configuredRamMB = ramMB;
     _configuredCPUs = 4;
     [self setDeviceIdentityForFirmware];
@@ -440,7 +446,7 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
         .code_fd = codePath.fileSystemRepresentation,
         .vars_fd = varsPath.fileSystemRepresentation,
         .disk0 = diskPath.fileSystemRepresentation,
-        .disk1 = NULL,
+        .disk1 = hasDriverDisk ? driverDiskPath.fileSystemRepresentation : NULL,
         .share_dir = sharedDir.fileSystemRepresentation,
         .share_sock = shareSock.fileSystemRepresentation,
         .ncpus = _configuredCPUs,
