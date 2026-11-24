@@ -522,7 +522,14 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
             hv_winvm_flush_disks();
         }
         double uptime = CFAbsoluteTimeGetCurrent() - _bootStartTime;
-        if (uptime <= 240.0 || getenv("WINIOS_ALWAYS_SCREENSHOT") != NULL) {
+        /* Full-screen PNG encoding is expensive on a 13-inch Retina iPad.
+         * Preserve early boot screenshots (first 3 samples) and then capture
+         * only once per minute until the 4-minute diagnostic window ends.
+         * WINIOS_ALWAYS_SCREENSHOT keeps the old every-tick behaviour. */
+        BOOL alwaysScreenshot = getenv("WINIOS_ALWAYS_SCREENSHOT") != NULL;
+        BOOL bootScreenshot = uptime <= 240.0 &&
+                              (_diagTickCount <= 3u || (_diagTickCount % 8u) == 0u);
+        if (alwaysScreenshot || bootScreenshot) {
             NSString *docs = [self documentsPath];
             NSString *tmpPng = [docs stringByAppendingPathComponent:@"latest_screen.png.tmp"];
             NSString *dstPng = [docs stringByAppendingPathComponent:@"latest_screen.png"];
