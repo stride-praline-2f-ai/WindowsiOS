@@ -131,7 +131,10 @@ static void prepare_cpu_thread(unsigned vcpu_index) {
     if (q && !strcmp(q, "ui")) c = QOS_CLASS_USER_INTERACTIVE;
     else if (q && !strcmp(q, "init")) c = QOS_CLASS_USER_INITIATED;
     else if (q && !strcmp(q, "default")) c = QOS_CLASS_DEFAULT;
-    if (c != QOS_CLASS_DEFAULT) pthread_set_qos_class_self_np(c, 0);
+    /* Explicitly apply DEFAULT on Duo; otherwise worker threads can inherit
+     * the elevated QoS of their creating thread instead of being demoted. */
+    if (c != QOS_CLASS_DEFAULT || (getenv("HV_DUO_A20_PROFILE") && vcpu_index >= 2))
+        pthread_set_qos_class_self_np(c, 0);
 }
 
 void hv_winvm_set_display_layer(void *layer) {

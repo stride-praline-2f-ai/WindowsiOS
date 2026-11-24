@@ -12,6 +12,8 @@
 #include <os/lock.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
+#include <stdlib.h>
+#include <string.h>
 
 static WinIOSBridge *s_shared_bridge = nil;
 
@@ -561,6 +563,8 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
     uint64_t jitUsedBytes = 0, jitCapBytes = 0, jitFullFlushes = 0, wfiTicks = 0;
     uint64_t audioUnderruns = 0, audioDroppedBytes = 0;
     uint32_t audioQueuedMs = 0;
+    AVAudioSession *activeAudioSession = [AVAudioSession sharedInstance];
+    double actualAudioBufferMs = activeAudioSession.IOBufferDuration * 1000.0;
     double wfiIdlePct = _lastWfiIdlePct;
     if (running) {
         hv_winvm_usb_stats(&kbdReady, &tabReady, &usbDelivered);
@@ -607,6 +611,7 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
         @"audio_underruns: %llu\n"
         @"audio_dropped_bytes: %llu\n"
         @"audio_queued_ms: %u\n"
+        @"audio_actual_io_ms: %.2f\n"
         @"share_up: %d\n"
         @"oauth_safari: %d\n"
         @"hinge_status: %ld\n"
@@ -632,6 +637,7 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
         audioUnderruns,
         audioDroppedBytes,
         audioQueuedMs,
+        actualAudioBufferMs,
         running ? hv_winvm_share_up() : 0,
         hv_share_url_handler_enabled(),
         (long)hingeStatus,
