@@ -13,6 +13,7 @@
 #include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 static WinIOSBridge *s_shared_bridge = nil;
@@ -197,8 +198,9 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
     NSProcessInfo *info = [NSProcessInfo processInfo];
     NSInteger thermal = info.thermalState;
     BOOL lowPower = info.lowPowerModeEnabled;
-    BOOL coolEnabled = [NSUserDefaults.standardUserDefaults objectForKey:@"winios.duoCoolMode"] == nil ||
-                       [NSUserDefaults.standardUserDefaults boolForKey:@"winios.duoCoolMode"];
+    NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
+    BOOL coolEnabled = [prefs objectForKey:@"winios.duoCoolMode"] == nil ||
+                       [prefs boolForKey:@"winios.duoCoolMode"];
     CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
     int next = _duoCoolLevel;
 
