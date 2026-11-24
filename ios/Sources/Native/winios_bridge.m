@@ -41,6 +41,10 @@ static BOOL winios_is_iphone_duo(void) {
     uint64_t _lastMachTicks;
     uint64_t _lastWfiTicks;
     double _lastWfiIdlePct;
+    /* Updated exclusively on _diagQueue; 30-second recovery avoids thermal
+     * policy flapping as the handset cools. */
+    int _duoCoolLevel;
+    CFAbsoluteTime _duoCalmSince;
 
     os_unfair_lock _metricsLock;
     CGSize _screenSizePts;
@@ -52,6 +56,7 @@ static BOOL winios_is_iphone_duo(void) {
 - (void)updateUnpackProgress:(double)frac;
 - (void)startDiagTimer;
 - (void)stopDiagTimer;
+- (void)sampleDuoThermalPolicy;
 @end
 
 static void vm_exit_trampoline(int reason) {
@@ -105,6 +110,8 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
         [nc addObserver:self selector:@selector(onAppBackgroundOrTerminate:) name:UIApplicationDidEnterBackgroundNotification object:nil];
         [nc addObserver:self selector:@selector(onAppBackgroundOrTerminate:) name:UIApplicationWillTerminateNotification object:nil];
         [nc addObserver:self selector:@selector(onAudioInterruption:) name:AVAudioSessionInterruptionNotification object:nil];
+        [nc addObserver:self selector:@selector(onSystemPowerChange:) name:NSProcessInfoThermalStateDidChangeNotification object:nil];
+        [nc addObserver:self selector:@selector(onSystemPowerChange:) name:NSProcessInfoPowerStateDidChangeNotification object:nil];
     }
     return self;
 }
@@ -170,6 +177,48 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
     NSNumber *typeNum = note.userInfo[AVAudioSessionInterruptionTypeKey];
     if (typeNum && typeNum.unsignedIntegerValue == AVAudioSessionInterruptionTypeEnded) {
         [[AVAudioSession sharedInstance] setActive:YES error:nil];
+    }
+}
+
+- (void)onSystemPowerChange:(NSNotification *)note {
+    (void)note;
+    if (!_vmRunning || !winios_is_iphone_duo()) return;
+    dispatch_async(_diagQueue, ^{
+        [self sampleDuoThermalPolicy];
+        [self writeDiagnosticsSnapshot];
+    });
+}
+
+/* CyPort-style worker distribution + NX18-style thermal recovery, adapted
+ * for a whole Windows VM. Changing only host scheduling and presentation
+ * avoids slowing Windows timers or distorting guest elapsed time. */
+- (void)sampleDuoThermalPolicy {
+    if (!_vmRunning || !winios_is_iphone_duo()) return;
+    NSProcessInfo *info = [NSProcessInfo processInfo];
+    NSInteger thermal = info.thermalState;
+    BOOL lowPower = info.lowPowerModeEnabled;
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    int next = _duoCoolLevel;
+
+    if (thermal >= NSProcessInfoThermalStateCritical) {
+        next = 2;
+        _duoCalmSince = 0;
+    } else if (thermal >= NSProcessInfoThermalStateSerious || lowPower) {
+        next = 1;
+        _duoCalmSince = 0;
+    } else if (_duoCoolLevel != 0) {
+        if (_duoCalmSince <= 0) _duoCalmSince = now;
+        else if (now - _duoCalmSince >= 30.0) {
+            next = 0;
+            _duoCalmSince = 0;
+        }
+    }
+
+    if (next != _duoCoolLevel) {
+        _duoCoolLevel = next;
+        hv_winvm_set_duo_cool_level(next);
+        fprintf(stderr, "winios: Duo thermal policy %d (state=%ld, low_power=%d)\n",
+                next, (long)thermal, lowPower ? 1 : 0);
     }
 }
 
@@ -502,7 +551,10 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
     hv_winvm_start(1, vm_exit_trampoline);
 
     [self startDiagTimer];
-    dispatch_async(_diagQueue, ^{ [self writeDiagnosticsSnapshot]; });
+    dispatch_async(_diagQueue, ^{
+        [self sampleDuoThermalPolicy];
+        [self writeDiagnosticsSnapshot];
+    });
     [self notifyChanged];
 }
 
@@ -532,13 +584,18 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
 
 - (void)onDiagTickBackground {
     _diagTickCount++;
+    [self sampleDuoThermalPolicy];
     [self writeDiagnosticsSnapshot];
     if (_vmRunning) {
         if ((_diagTickCount % 4u) == 0u) {
             hv_winvm_flush_disks();
         }
         double uptime = CFAbsoluteTimeGetCurrent() - _bootStartTime;
-        if (uptime <= 240.0 || getenv("WINIOS_ALWAYS_SCREENSHOT") != NULL) {
+        /* Capturing and PNG-encoding a full Windows screen every 8 s is
+         * unnecessary heat. On Duo sample every 32 s unless explicitly
+         * requested, while retaining all snapshots on other devices. */
+        BOOL captureDuo = !winios_is_iphone_duo() || (_diagTickCount % 4u == 0u);
+        if ((uptime <= 240.0 && captureDuo) || getenv("WINIOS_ALWAYS_SCREENSHOT") != NULL) {
             NSString *docs = [self documentsPath];
             NSString *tmpPng = [docs stringByAppendingPathComponent:@"latest_screen.png.tmp"];
             NSString *dstPng = [docs stringByAppendingPathComponent:@"latest_screen.png"];
@@ -565,6 +622,10 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
     uint32_t audioQueuedMs = 0;
     AVAudioSession *activeAudioSession = [AVAudioSession sharedInstance];
     double actualAudioBufferMs = activeAudioSession.IOBufferDuration * 1000.0;
+    NSProcessInfo *powerInfo = [NSProcessInfo processInfo];
+    NSInteger thermalState = powerInfo.thermalState;
+    BOOL lowPowerMode = powerInfo.lowPowerModeEnabled;
+    int coolingLevel = running ? hv_winvm_get_duo_cool_level() : 0;
     double wfiIdlePct = _lastWfiIdlePct;
     if (running) {
         hv_winvm_usb_stats(&kbdReady, &tabReady, &usbDelivered);
@@ -612,6 +673,9 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
         @"audio_dropped_bytes: %llu\n"
         @"audio_queued_ms: %u\n"
         @"audio_actual_io_ms: %.2f\n"
+        @"thermal_state: %ld\n"
+        @"low_power_mode: %d\n"
+        @"duo_cooling_level: %d\n"
         @"share_up: %d\n"
         @"oauth_safari: %d\n"
         @"hinge_status: %ld\n"
@@ -638,6 +702,9 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
         audioDroppedBytes,
         audioQueuedMs,
         actualAudioBufferMs,
+        (long)thermalState,
+        lowPowerMode ? 1 : 0,
+        coolingLevel,
         running ? hv_winvm_share_up() : 0,
         hv_share_url_handler_enabled(),
         (long)hingeStatus,
