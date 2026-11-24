@@ -97,25 +97,28 @@ static void prealloc_ledger_exempt_ram(void) {
     size_t machine_len = sizeof machine;
     sysctlbyname("hw.machine", machine, &machine_len, NULL, 0);
 
-    /* The 1/2 TB M4 iPad Pro has 16 GB of physical RAM. Give Windows a
-     * 6 GiB guest-RAM target, leaving at least 6 GiB for iPadOS and the host
-     * renderer/JIT. Use the older 4.5 GiB profile on every other device.
-     * Every allocation is checked: failed mappings fall back automatically.
-     * This is guest memory, NOT a promise that iPadOS grants an equivalent
-     * per-process memory budget or unlimited resident RAM. */
+    /* Experimental 16 GiB M4 iPad Pro profile: attempt a 12 GiB guest-RAM
+     * mapping while leaving at least 3 GiB of the physically installed memory
+     * for the iPadOS host, Metal and JIT. This is an upper TARGET, not a
+     * guarantee of resident memory or immunity from iPadOS memory-pressure
+     * termination. A failed mapping falls back to progressively smaller ones.
+     * All non-16-GiB M4 devices retain the original <= 4.5 GiB profile. */
     const int ipad_m4_16gb =
         phys_mb >= 15000u &&
         (!strcmp(machine, "iPad16,5") || !strcmp(machine, "iPad16,6") ||
          !strcmp(machine, "iPad16,3") || !strcmp(machine, "iPad16,4"));
     static const uint64_t standard_candidates_mb[] = {4608, 4096, 3584, 3072, 2560, 2048};
-    static const uint64_t ipad_candidates_mb[] = {6144, 5632, 5120, 4608, 4096, 3584, 3072, 2560, 2048};
+    static const uint64_t ipad_candidates_mb[] = {
+        12288, 11264, 10240, 9216, 8192, 7168, 6144,
+        5632, 5120, 4608, 4096, 3584, 3072, 2560, 2048
+    };
     const uint64_t *candidates_mb = ipad_m4_16gb ? ipad_candidates_mb : standard_candidates_mb;
     const size_t count = ipad_m4_16gb
         ? sizeof(ipad_candidates_mb) / sizeof(ipad_candidates_mb[0])
         : sizeof(standard_candidates_mb) / sizeof(standard_candidates_mb[0]);
-    const uint64_t reserve_mb = ipad_m4_16gb ? 6144u : 2560u;
+    const uint64_t reserve_mb = ipad_m4_16gb ? 3072u : 2560u;
     WINIOS_LOG("Guest RAM profile: %s (model=%s, physical=%llu MiB)",
-               ipad_m4_16gb ? "M4 iPad Pro 16 GB" : "standard",
+               ipad_m4_16gb ? "M4 iPad Pro 16 GB (12 GiB experimental target)" : "standard",
                machine, (unsigned long long)phys_mb);
 
     for (size_t i = 0; i < count; i++) {

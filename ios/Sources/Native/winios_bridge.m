@@ -442,6 +442,29 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
     _configuredCPUs = 4;
     [self setDeviceIdentityForFirmware];
 
+    /* Windows ARM64 already executes common guest ARM64 instructions as
+     * host-native AArch64 via the existing direct-copy JIT translation paths.
+     * On the M4 iPad try the built-in superblock option: it keeps fall-through
+     * code across eligible conditional branches in one JIT block instead of
+     * returning to the dispatcher as often. Keep the measured-slower
+     * HV_GROUPS optimisation off, and preserve the existing fast TLB,
+     * inline cross-page branch and return-address optimisations.
+     *
+     * Environment override is intentionally supported for regression tests:
+     * supplying HV_SUPERBLOCKS=0 before launch restores standard translation.
+     */
+    NSString *hardwareModel = [[UIDevice currentDevice] model];
+    BOOL ipadM4 = [[UIDevice currentDevice] userInterfaceIdiom] == UIUserInterfaceIdiomPad &&
+                   [hardwareModel hasPrefix:@"iPad"];
+    char machineId[64] = {0};
+    size_t machineLen = sizeof machineId;
+    sysctlbyname("hw.machine", machineId, &machineLen, NULL, 0);
+    ipadM4 = ipadM4 &&
+             (!strcmp(machineId, "iPad16,3") || !strcmp(machineId, "iPad16,4") ||
+              !strcmp(machineId, "iPad16,5") || !strcmp(machineId, "iPad16,6"));
+    if (ipadM4 && getenv("HV_SUPERBLOCKS") == NULL)
+        setenv("HV_SUPERBLOCKS", "1", 0);
+
     HvWinVmConfig cfg = {
         .code_fd = codePath.fileSystemRepresentation,
         .vars_fd = varsPath.fileSystemRepresentation,
