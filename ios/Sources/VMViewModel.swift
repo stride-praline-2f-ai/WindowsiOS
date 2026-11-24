@@ -83,7 +83,10 @@ final class VMViewModel: ObservableObject {
     @Published var postureMode: PostureMode = .auto
     @Published var deckLayout: DeckLayout = .split
     @Published var controlBarVisible: Bool = true
-    @Published var trackpadMode: Bool = false
+    /// The Trackpad / Touch choice is kept across launches (Touch until the user picks Trackpad).
+    @Published var trackpadMode: Bool = UserDefaults.standard.bool(forKey: "winios.trackpadMode") {
+        didSet { UserDefaults.standard.set(trackpadMode, forKey: "winios.trackpadMode") }
+    }
     @Published var rightClickArmed: Bool = false
     @Published var systemKeyboardVisible: Bool = false
     @Published var activeSafariURL: IdentifiableURL? = nil

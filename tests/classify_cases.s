@@ -37,6 +37,10 @@ _hv_classify_cases:
     mrs x0, sctlr_el1           // sysreg
     msr ttbr0_el1, x1           // sysreg
     msr daifset, #2             // sysreg
+    .inst 0xd500401f            // copy (cfinv: FlagM, legal at EL0, Prism uses it)
+    .inst 0xd500403f            // copy (xaflag)
+    .inst 0xd500405f            // copy (axflag)
+    .inst 0xd500409f            // sysreg (msr pan, #0)
     dc civac, x2                // sys
     tlbi vmalle1                // sys
     dsb sy                      // barrier

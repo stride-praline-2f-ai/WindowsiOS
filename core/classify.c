@@ -37,6 +37,13 @@ static HvInsnKind classify_system(uint32_t insn) {
             (void)op2;
             return HV_INSN_BARRIER;
         }
+        /* CFINV (FEAT_FlagM), XAFLAG and AXFLAG (FEAT_FlagM2) share the MSR (immediate) space (op1 = 0,
+           CRn = 4, CRm = 0, op2 = 0..2, Rt = 31), but they only change NZCV and are legal at EL0. They run as
+           they are; as MSRs they were UNDEFINED at EL0, which crashed Windows' x86/x64 emulator (Prism uses
+           CFINV for x86 carry). */
+        if (l == 0 && crn == 4 && op1 == 0 && ((insn >> 8) & 0xf) == 0 && ((insn >> 5) & 7) <= 2 &&
+            (insn & 0x1f) == 0x1f)
+            return HV_INSN_COPY;
         if (l == 0 && crn == 4) return HV_INSN_SYSREG; /* MSR (immediate) to PSTATE */
         if (l == 0 && crn == 1 && op1 == 3 && (insn & 0x1f) == 0x1f) {
             /* WFET, WFIT (FEAT_WFxT) live in CRn=1. */

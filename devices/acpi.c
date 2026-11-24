@@ -710,8 +710,18 @@ static size_t build_iort(Buf *tabs) {
     return start;
 }
 
+/* The machine and processor names can come from the host (HV_SMBIOS_PRODUCT, HV_SMBIOS_MODEL, HV_SMBIOS_CPU,
+   HV_SMBIOS_CPU_MHZ), so Windows shows the device it runs on; without them it shows the iPhone Duo as before. */
+static void b_str(Buf *t, const char *env, const char *fallback) {
+    const char *v = getenv(env);
+    if (!v || !*v) v = fallback;
+    b_put(t, v, strlen(v) + 1);
+}
+
 static void build_smbios(HvFwCfg *fw, int ncpus, uint64_t ram_size) {
     Buf t = {0};
+    const char *mhz_env = getenv("HV_SMBIOS_CPU_MHZ");
+    uint16_t cpu_mhz = (uint16_t)(mhz_env && atoi(mhz_env) > 0 ? atoi(mhz_env) : 4000);
 
     /* Type 1: System Information (len 27) */
     {
@@ -731,7 +741,7 @@ static void build_smbios(HvFwCfg *fw, int ncpus, uint64_t ram_size) {
         b_u8(&t, 0); /* SKU */
         b_u8(&t, 5); /* Family */
         b_put(&t, "Apple / WindowsiOS\0", 19);
-        b_put(&t, "iPhone Duo ARM64 PC\0", 20);
+        b_str(&t, "HV_SMBIOS_PRODUCT", "iPhone Duo ARM64 PC");
         b_put(&t, "1.0\0", 4);
         b_put(&t, "DUO-WIN11-ARM64\0", 16);
         b_put(&t, "WindowsiOS\0", 11);
@@ -758,7 +768,7 @@ static void build_smbios(HvFwCfg *fw, int ncpus, uint64_t ram_size) {
         b_u8(&t, 0);
         b_u8(&t, 0);
         b_put(&t, "Apple\0", 6);
-        b_put(&t, "iPhone19,4\0", 11);
+        b_str(&t, "HV_SMBIOS_MODEL", "iPhone19,4");
         b_u8(&t, 0);
     }
 
@@ -775,8 +785,8 @@ static void build_smbios(HvFwCfg *fw, int ncpus, uint64_t ram_size) {
         b_u8(&t, 3);
         b_u8(&t, 0x8b);
         b_u16(&t, 100U);
-        b_u16(&t, 4000U);
-        b_u16(&t, 3600U);
+        b_u16(&t, cpu_mhz);
+        b_u16(&t, mhz_env ? cpu_mhz : 3600U);
         b_u8(&t, 0x41);
         b_u8(&t, 1);
         b_u16(&t, 0xffffU);
@@ -792,7 +802,7 @@ static void build_smbios(HvFwCfg *fw, int ncpus, uint64_t ram_size) {
         b_u16(&t, 0x0101U);
         b_put(&t, "SOC0\0", 5);
         b_put(&t, "Apple / ARM\0", 12);
-        b_put(&t, "Apple A20 Pro (WindowsiOS JIT)\0", 31);
+        b_str(&t, "HV_SMBIOS_CPU", "Apple A20 Pro (WindowsiOS JIT)");
         b_u8(&t, 0);
     }
 
