@@ -291,6 +291,23 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
     return _vmRunning;
 }
 
+- (NSString *)thermalStatusText {
+    if (!winios_is_iphone_duo()) return @"Thermal: standard";
+    NSInteger state = NSProcessInfo.processInfo.thermalState;
+    NSString *heat = state == NSProcessInfoThermalStateNominal ? @"Nominal" :
+                     state == NSProcessInfoThermalStateFair ? @"Warm" :
+                     state == NSProcessInfoThermalStateSerious ? @"Serious" :
+                     state == NSProcessInfoThermalStateCritical ? @"Critical" : @"Unknown";
+    if (!_vmRunning) return [NSString stringWithFormat:@"THERMAL %@", heat.uppercaseString];
+    const char *mode = getenv("HV_DUO_COOL_MODE");
+    BOOL cool = mode && strcmp(mode, "0") != 0;
+    int level = hv_winvm_get_duo_cool_level();
+    NSString *policy = level >= 2 ? @"Critical cooling" :
+                       level >= 1 ? @"Active cooling" :
+                       cool ? @"Cool Mode" : @"Speed Mode";
+    return [NSString stringWithFormat:@"%@ · %@", heat.uppercaseString, policy];
+}
+
 - (BOOL)isUnpacking {
     return _unpacking;
 }
@@ -559,6 +576,10 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
     _lastMachTicks = mach_absolute_time();
     _lastWfiTicks = 0;
     _lastWfiIdlePct = 0.0;
+    /* A new boot must not inherit the previous guest's thermal level. */
+    _duoCoolLevel = 0;
+    _duoCalmSince = 0;
+    hv_winvm_set_duo_cool_level(0);
     _vmStatus = [NSString stringWithFormat:@"Running Windows 11 ARM64 (%d vCPUs, %llu MB RAM)", _configuredCPUs, _configuredRamMB];
     [[UIApplication sharedApplication] setIdleTimerDisabled:YES];
 
@@ -605,10 +626,13 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
             hv_winvm_flush_disks();
         }
         double uptime = CFAbsoluteTimeGetCurrent() - _bootStartTime;
-        /* Capturing and PNG-encoding a full Windows screen every 8 s is
-         * unnecessary heat. On Duo sample every 32 s unless explicitly
-         * requested, while retaining all snapshots on other devices. */
-        BOOL captureDuo = !winios_is_iphone_duo() || (_diagTickCount % 4u == 0u);
+        /* Full-screen PNG encoding creates avoidable CPU load and spikes.
+         * Cool Mode saves only an initial diagnostic screenshot unless the
+         * user explicitly opts in to frequent captures for debugging. */
+        const char *cool = getenv("HV_DUO_COOL_MODE");
+        BOOL duoCool = winios_is_iphone_duo() && cool && strcmp(cool, "0") != 0;
+        BOOL captureDuo = !winios_is_iphone_duo() ||
+                          (duoCool ? _diagTickCount == 1u : (_diagTickCount % 4u == 0u));
         if ((uptime <= 240.0 && captureDuo) || getenv("WINIOS_ALWAYS_SCREENSHOT") != NULL) {
             NSString *docs = [self documentsPath];
             NSString *tmpPng = [docs stringByAppendingPathComponent:@"latest_screen.png.tmp"];
@@ -693,6 +717,7 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
         @"low_power_mode: %d\n"
         @"duo_cooling_level: %d\n"
         @"duo_cool_mode: %d\n"
+        @"duo_kicker_interval_us: %u\n"
         @"share_up: %d\n"
         @"oauth_safari: %d\n"
         @"hinge_status: %ld\n"
@@ -723,6 +748,7 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
         lowPowerMode ? 1 : 0,
         coolingLevel,
         coolModeEnabled,
+        hv_winvm_kicker_interval_us(),
         running ? hv_winvm_share_up() : 0,
         hv_share_url_handler_enabled(),
         (long)hingeStatus,

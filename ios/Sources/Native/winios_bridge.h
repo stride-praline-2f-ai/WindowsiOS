@@ -18,6 +18,7 @@ typedef void (^WinIOSStateCallback)(void);
 @property (nonatomic, readonly) double unpackProgress;
 @property (nonatomic, readonly) NSString *jitStatusText;
 @property (nonatomic, readonly) NSString *vmStatusText;
+@property (nonatomic, readonly) NSString *thermalStatusText;
 @property (nonatomic, readonly) uint32_t framebufferWidth;
 @property (nonatomic, readonly) uint32_t framebufferHeight;
 @property (nonatomic, readonly) uint64_t presentedFrames;

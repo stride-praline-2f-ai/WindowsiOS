@@ -132,8 +132,12 @@ static NSString *const kFbShaderSource =
     if (!timer) return;
     int level = duoBalancedDisplay ?
         atomic_load_explicit(&g_duo_cool_level, memory_order_acquire) : 0;
-    uint32_t hz = level >= 2 ? 20u :
-        (level >= 1 || idleRefresh) ? 30u : (duoCoolDisplay ? 40u : 60u);
+    /* In Cool Mode, a static desktop needs far fewer scans and Metal
+     * submissions. Thermal levels cap host presents, not guest time. */
+    uint32_t hz = level >= 2 ? 15u :
+                  level >= 1 ? 24u :
+                  idleRefresh ? (duoCoolDisplay ? 15u : 30u) :
+                  (duoCoolDisplay ? 30u : 60u);
     if (scheduledHz == hz) return;
     dispatch_source_set_timer(timer, DISPATCH_TIME_NOW,
                               NSEC_PER_SEC / hz, 2 * NSEC_PER_MSEC);

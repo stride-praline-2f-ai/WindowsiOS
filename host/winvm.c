@@ -277,14 +277,33 @@ int hv_winvm_create(const HvWinVmConfig *c, char *err, size_t errlen) {
     return 0;
 }
 
+/* The old 2.5 ms global kicker generated 400 whole-VM wakeups per
+ * second even on an idle Windows desktop. In Cool Mode, reduce the
+ * redundant kicks but keep every vCPU's real guest timer deadline
+ * and device-triggered wakeups intact (those are handled separately). */
+unsigned hv_winvm_kicker_interval_us(void) {
+#if TARGET_OS_IPHONE
+    if (getenv("HV_DUO_A20_PROFILE")) {
+        int level = atomic_load_explicit(&duo_cool_level, memory_order_acquire);
+        if (level >= 2) return 12000u;
+        if (level >= 1) return 8000u;
+        const char *cool = getenv("HV_DUO_COOL_MODE");
+        if (cool && strcmp(cool, "0") != 0) return 6000u;
+    }
+    return 2500u;
+#else
+    return 1000u;
+#endif
+}
+
 static void *kicker_thread(void *unused) {
     (void)unused;
-    while (!atomic_load_explicit(&stop_requested, memory_order_relaxed)) {
 #if TARGET_OS_IPHONE
-        usleep(2500);
-#else
-        usleep(1000);
+    if (getenv("HV_DUO_A20_PROFILE"))
+        (void)pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
 #endif
+    while (!atomic_load_explicit(&stop_requested, memory_order_relaxed)) {
+        usleep(hv_winvm_kicker_interval_us());
         hv_machine_kick_all(&m);
     }
     return NULL;
