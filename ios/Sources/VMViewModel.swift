@@ -95,6 +95,7 @@ final class VMViewModel: ObservableObject {
 
     private var didAutoLaunchAttempt = false
     private var didAutoJITRequest = false
+    private var jitRecoveryTask: Task<Void, Never>? = nil
     private var oauthPollTimer: Timer? = nil
 
     init() {
@@ -272,11 +273,51 @@ final class VMViewModel: ObservableObject {
             return
         }
 
+        // StikDebug may bring this app foreground before the debugger is
+        // fully attached. Check readiness briefly, without repeatedly
+        // launching the external app or spinning CPU while Windows is idle.
+        if autoJIT && didAutoJITRequest && !b.isJITLive &&
+           b.hasProvisionedMachine() && !b.isVMRunning {
+            beginJITRecoveryCheck()
+        }
+
         if autoBoot && b.isJITLive && !b.isVMRunning && !b.isUnpacking &&
            b.hasProvisionedMachine() && !didAutoLaunchAttempt {
             didAutoLaunchAttempt = true
             b.prepareAndStart(with: nil)
             syncFromBridge()
+        }
+    }
+
+    private func beginJITRecoveryCheck() {
+        guard jitRecoveryTask == nil else { return }
+        jitRecoveryTask = Task { @MainActor [weak self] in
+            // Maximum ~8 seconds of sparse checks after returning from StikDebug.
+            // Only call the TXM JIT allocator after the debugger flag is set.
+            for _ in 0..<10 {
+                try? await Task.sleep(for: .milliseconds(800))
+                guard let self else { return }
+                let b = WinIOSBridge.shared
+                if b.isVMRunning ||
+                   !UserDefaults.standard.bool(forKey: "winios.autoEnableJIT") {
+                    break
+                }
+                if b.isJITLive {
+                    self.jitRecoveryTask = nil
+                    self.onAppBecameActive()
+                    return
+                }
+                if b.isDebuggerAttached {
+                    let ready = b.tryAcquireJIT(true)
+                    self.syncFromBridge()
+                    if ready {
+                        self.jitRecoveryTask = nil
+                        self.onAppBecameActive()
+                        return
+                    }
+                }
+            }
+            self?.jitRecoveryTask = nil
         }
     }
 
