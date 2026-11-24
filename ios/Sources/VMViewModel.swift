@@ -288,20 +288,36 @@ final class VMViewModel: ObservableObject {
 
     func requestStikDebugJIT() {
         guard let bundleID = Bundle.main.bundleIdentifier else { return }
-        var urlStr = "stikjit://enable-jit?bundle-id=\(bundleID)&pid=\(getpid())"
-        if let scriptPath = Bundle.main.path(forResource: "henge-jit", ofType: "js"),
-           let script = try? String(contentsOfFile: scriptPath, encoding: .utf8),
-           let data = script.data(using: .utf8) {
-            let b64 = data.base64EncodedString()
-                .replacingOccurrences(of: "+", with: "-")
-                .replacingOccurrences(of: "/", with: "_")
-                .trimmingCharacters(in: CharacterSet(charactersIn: "="))
-            if let encoded = b64.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
-                urlStr += "&script-data=\(encoded)"
-            }
+
+        var req = URLComponents()
+        req.scheme = "stikdebug"
+        req.host = "enable-jit"
+        req.queryItems = [
+            URLQueryItem(name: "bundle-id", value: bundleID),
+            URLQueryItem(name: "pid", value: String(getpid()))
+        ]
+
+        // WindowsiOS's TXM breakpoint protocol needs its own fixed script.
+        // Let URLComponents percent-encode standard Base64, as recommended by
+        // the current StikDebug integration guide.
+        if let path = Bundle.main.path(forResource: "henge-jit", ofType: "js"),
+           let data = try? Data(contentsOf: URL(fileURLWithPath: path)) {
+            req.queryItems?.append(
+                URLQueryItem(name: "script-data", value: data.base64EncodedString())
+            )
         }
-        if let url = URL(string: urlStr) {
-            UIApplication.shared.open(url, options: [:], completionHandler: nil)
+
+        guard let currentURL = req.url else { return }
+        if UIApplication.shared.canOpenURL(currentURL) {
+            UIApplication.shared.open(currentURL, options: [:], completionHandler: nil)
+        } else {
+            // Older StikJIT distributions registered the original URL scheme.
+            req.scheme = "stikjit"
+            if let legacyURL = req.url, UIApplication.shared.canOpenURL(legacyURL) {
+                UIApplication.shared.open(legacyURL, options: [:], completionHandler: nil)
+            } else {
+                jitStatusText = "Install StikDebug to enable JIT automatically"
+            }
         }
     }
 }

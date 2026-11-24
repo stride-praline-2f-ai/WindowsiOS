@@ -32,6 +32,9 @@ targets:
       properties:
         CFBundleDisplayName: Windows 11
         LSRequiresIPhoneOS: true
+        LSApplicationQueriesSchemes:
+          - stikdebug
+          - stikjit
         UILaunchScreen: {}
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
