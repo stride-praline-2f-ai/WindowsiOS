@@ -7,6 +7,8 @@ struct SessionView: View {
     private let uiHaptic = UIImpactFeedbackGenerator(style: .light)
     @State private var isPastingClipboard = false
     @AppStorage("winios.duoCoolMode") private var duoCoolMode = true
+    @AppStorage("winios.autoEnableJIT") private var autoEnableJIT = false
+    @AppStorage("winios.autoBootWindows") private var autoBootWindows = true
 
     var body: some View {
         GeometryReader { geo in
@@ -482,6 +484,14 @@ struct SessionView: View {
     private func surfaceStudioCommandPill(viewportSize: CGSize) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
+                // Show actual reported heat/policy, not just the switch state.
+                Text(vm.thermalStatusText)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Color.white.opacity(0.75))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(Color.white.opacity(0.06), in: Capsule())
+
                 // Authentic 4-pane Start button
                 Button {
                     uiHaptic.impactOccurred(intensity: 0.65)
@@ -670,16 +680,27 @@ struct SessionView: View {
                     .foregroundStyle(.white.opacity(0.60))
             }
 
-            if UIDevice.current.userInterfaceIdiom == .phone && !vm.isUnpacking {
-                Toggle(isOn: $duoCoolMode) {
-                    Label("Cool Mode (next boot)", systemImage: "snowflake")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.85))
+            if !vm.isUnpacking {
+                VStack(spacing: 7) {
+                    if UIDevice.current.userInterfaceIdiom == .phone {
+                        Toggle(isOn: $duoCoolMode) {
+                            Label("Cool Mode (next boot)", systemImage: "snowflake")
+                        }
+                    }
+                    Toggle(isOn: $autoEnableJIT) {
+                        Label("Auto-enable JIT via StikDebug", systemImage: "bolt.shield")
+                    }
+                    Toggle(isOn: $autoBootWindows) {
+                        Label("Boot Windows automatically", systemImage: "play.circle")
+                    }
                 }
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.white.opacity(0.85))
                 .tint(.cyan)
                 .padding(.horizontal, 12)
-                .padding(.vertical, 6)
+                .padding(.vertical, 9)
                 .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
+                .accessibilityElement(children: .contain)
             }
 
             if !vm.isUnpacking {

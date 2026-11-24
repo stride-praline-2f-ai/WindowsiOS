@@ -67,6 +67,7 @@ final class VMViewModel: ObservableObject {
     @Published var unpackProgress: Double = 0
     @Published var jitStatusText: String = "Checking JIT..."
     @Published var vmStatusText: String = "Initializing..."
+    @Published var thermalStatusText: String = "THERMAL UNKNOWN"
     @Published var fbWidth: UInt32 = 0
     @Published var fbHeight: UInt32 = 0
     @Published var presentedFrames: UInt64 = 0
@@ -93,6 +94,7 @@ final class VMViewModel: ObservableObject {
     @Published var useSafariForOAuth: Bool = WinIOSBridge.shared.useSafariForGuestLinks
 
     private var didAutoLaunchAttempt = false
+    private var didAutoJITRequest = false
     private var oauthPollTimer: Timer? = nil
 
     init() {
@@ -235,6 +237,7 @@ final class VMViewModel: ObservableObject {
         unpackProgress = b.unpackProgress
         jitStatusText = b.jitStatusText
         vmStatusText = b.vmStatusText
+        thermalStatusText = b.thermalStatusText
         fbWidth = b.framebufferWidth
         fbHeight = b.framebufferHeight
         presentedFrames = b.presentedFrames
@@ -246,11 +249,31 @@ final class VMViewModel: ObservableObject {
 
     func onAppBecameActive() {
         let b = WinIOSBridge.shared
-        if !b.isJITLive && b.isDebuggerAttached {
+        let settings = UserDefaults.standard
+        let autoJIT = settings.bool(forKey: "winios.autoEnableJIT")
+        // Preserve the previous auto-boot behaviour for existing installs.
+        let autoBoot = settings.object(forKey: "winios.autoBootWindows") == nil ||
+                       settings.bool(forKey: "winios.autoBootWindows")
+
+        // Try JIT acquisition if an authorised debugger is already attached.
+        // This never changes iOS code-signing or security permissions.
+        if !b.isJITLive && b.isDebuggerAttached && (autoJIT || autoBoot) {
             _ = b.tryAcquireJIT(true)
         }
         syncFromBridge()
-        if b.isJITLive && !b.isVMRunning && !b.isUnpacking && b.hasProvisionedMachine() && !didAutoLaunchAttempt {
+
+        // Optional hand-off to StikDebug. Request only once in this app
+        // process to avoid endless URL switching if StikDebug is unavailable
+        // or the user declines. The user can still tap ENABLE JIT manually.
+        if !b.isJITLive && autoJIT && !didAutoJITRequest &&
+           !b.isDebuggerAttached && b.hasProvisionedMachine() {
+            didAutoJITRequest = true
+            requestStikDebugJIT()
+            return
+        }
+
+        if autoBoot && b.isJITLive && !b.isVMRunning && !b.isUnpacking &&
+           b.hasProvisionedMachine() && !didAutoLaunchAttempt {
             didAutoLaunchAttempt = true
             b.prepareAndStart(with: nil)
             syncFromBridge()
