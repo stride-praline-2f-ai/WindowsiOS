@@ -60,7 +60,7 @@ jobs:
           from pathlib import Path
           import struct
           d = Path("build/driver-disk/netkvm-driver.img").read_bytes()
-          assert d[510:512] == b"\\x55\\xaa", "protective MBR is missing"
+          assert d[510:512] == bytes([0x55, 0xaa]), "protective MBR is missing"
           assert d[450] == 0xee, "protective MBR partition type not GPT"
           assert d[512:520] == b"EFI PART", "primary GPT header missing"
           e = d[1024:1152]
@@ -87,12 +87,12 @@ jobs:
           import struct
           d = Path("build/driver-disk/netkvm-driver.img").read_bytes()
           assert d[:0] == b""
-          assert d[510:512] == b"\\x55\\xaa"
+          assert d[510:512] == bytes([0x55, 0xaa])
           assert d[512:520] == b"EFI PART"
           e = d[1024:1152]
           start, end = struct.unpack_from("<QQ", e, 32)
           off = start * 512
-          assert d[off+510:off+512] == b"\\x55\\xaa", "FAT32 boot signature missing"
+          assert d[off+510:off+512] == bytes([0x55, 0xaa]), "FAT32 boot signature missing"
           assert d[off+82:off+90] == b"FAT32   ", "FAT32 BPB missing"
           assert d[off+71:off+82].startswith(b"NETKVM"), "volume label missing"
           print(f"Verified GPT disk and FAT32 filesystem: first LBA {start}, last LBA {end}")
