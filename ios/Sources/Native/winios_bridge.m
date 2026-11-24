@@ -263,8 +263,9 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
 
 - (void)installTrapGuard {
     winios_jit_install_trap_handler();
-    [[UIApplication sharedApplication] setIdleTimerDisabled:YES];
-    [self configureAudioSessionAndMicPermission];
+    /* Keep normal iPhone screen sleep and avoid activating a microphone/audio
+     * session just to display the boot launcher. The VM start path enables
+     * the session and prevents display sleep only when Windows runs. */
     UIScreen *mainScreen = [UIScreen mainScreen];
     [self updateScreenSize:mainScreen.bounds.size scale:mainScreen.scale];
     [self notifyChanged];
