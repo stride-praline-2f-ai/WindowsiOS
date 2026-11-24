@@ -28,7 +28,7 @@ permissions:
 
 jobs:
   ipa:
-    runs-on: xcode-27
+    runs-on: macos-15-intel
     timeout-minutes: 90
     defaults:
       run:
@@ -43,7 +43,7 @@ jobs:
 
       - name: Install build tools
         run: |
-          test "$(uname -m)" = arm64
+          # Build host may be x86_64; all iOS outputs explicitly target arm64.
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
           brew install xcodegen meson ninja pkg-config python
