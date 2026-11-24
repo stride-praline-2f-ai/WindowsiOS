@@ -47,6 +47,9 @@ static NSString *const kFbShaderSource =
     _Atomic(uint64_t) framesPresented;
     uint64_t lastHash;
     CGSize lastDrawableSize;
+    BOOL duoBalancedDisplay;
+    BOOL idleRefresh;
+    uint32_t unchangedTicks;
 }
 - (instancetype)initWithDisplay:(HvFbDisplay *)display;
 - (void)setTargetLayer:(CAMetalLayer *)newLayer;
@@ -59,6 +62,7 @@ static NSString *const kFbShaderSource =
     if ((self = [super init])) {
         fb = display;
         lock = OS_UNFAIR_LOCK_INIT;
+        duoBalancedDisplay = getenv("HV_DUO_A20_PROFILE") != NULL;
         device = MTLCreateSystemDefaultDevice();
         if (device) {
             queue = [device newCommandQueue];
@@ -81,6 +85,11 @@ static NSString *const kFbShaderSource =
     layer = newLayer;
     lastHash = 0;
     lastDrawableSize = CGSizeZero;
+    unchangedTicks = 0;
+    if (timer && idleRefresh) {
+        dispatch_source_set_timer(timer, DISPATCH_TIME_NOW, NSEC_PER_SEC / 60, 2 * NSEC_PER_MSEC);
+        idleRefresh = NO;
+    }
     if (layer && device) {
         dispatch_block_t cfg = ^{
             newLayer.device = self->device;
@@ -143,8 +152,20 @@ static uint64_t quick_frame_hash(const uint8_t *px, uint32_t w, uint32_t h, uint
         uint64_t hval = quick_frame_hash(px, w, h, stride);
         BOOL sizeChanged = !CGSizeEqualToSize(dsize, lastDrawableSize);
         if (hval == lastHash && !sizeChanged && texW == w && texH == h) {
+            /* Desktop backgrounds are often unchanged for seconds. On Duo
+             * reduce wasted CPU wakeups and framebuffer hashing to 30 Hz;
+             * return to 60 Hz on the first changed frame. */
+            if (duoBalancedDisplay && ++unchangedTicks >= 60 && !idleRefresh && timer) {
+                dispatch_source_set_timer(timer, DISPATCH_TIME_NOW, NSEC_PER_SEC / 30, 2 * NSEC_PER_MSEC);
+                idleRefresh = YES;
+            }
             os_unfair_lock_unlock(&lock);
             return;
+        }
+        unchangedTicks = 0;
+        if (idleRefresh && timer) {
+            dispatch_source_set_timer(timer, DISPATCH_TIME_NOW, NSEC_PER_SEC / 60, 2 * NSEC_PER_MSEC);
+            idleRefresh = NO;
         }
 
         if (!texture || texW != w || texH != h) {

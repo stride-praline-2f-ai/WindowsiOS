@@ -15,6 +15,15 @@
 
 static WinIOSBridge *s_shared_bridge = nil;
 
+/* Hardware-specific choices are limited to the iPhone Duo (A20 Pro).
+ * Do not apply its scheduling/audio policy to M-series iPads or Macs. */
+static BOOL winios_is_iphone_duo(void) {
+    char machine[64] = {0};
+    size_t n = sizeof machine;
+    return sysctlbyname("hw.machine", machine, &n, NULL, 0) == 0 &&
+           strcmp(machine, "iPhone19,4") == 0;
+}
+
 @interface WinIOSBridge () {
     BOOL _vmRunning;
     BOOL _unpacking;
@@ -114,7 +123,9 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
      * applies). */
     [session setAllowHapticsAndSystemSoundsDuringRecording:YES error:nil];
     [session setPreferredSampleRate:48000.0 error:nil];
-    [session setPreferredIOBufferDuration:0.010 error:nil];
+    /* The guest's periodic DMA makes 10 ms output buffers fragile on Duo;
+     * 20 ms trades a little latency for fewer crackles during VM stalls. */
+    [session setPreferredIOBufferDuration:winios_is_iphone_duo() ? 0.020 : 0.010 error:nil];
     [session setActive:YES error:nil];
 
     if (@available(iOS 17.0, *)) {
@@ -396,6 +407,9 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
 
 - (void)startConfiguredVMInDirectory:(NSString *)dir {
     if (_vmRunning) return;
+    /* Opt in to the balanced A20 Pro scheduling profile only on iPhone Duo. */
+    if (winios_is_iphone_duo()) setenv("HV_DUO_A20_PROFILE", "1", 1);
+    else unsetenv("HV_DUO_A20_PROFILE");
     [self configureAudioSessionAndMicPermission];
 
     WinIosDualMapping jit = winios_jit_mapping();

@@ -103,7 +103,7 @@ static void on_ill(int sig, siginfo_t *info, void *ctx) {
     sigaction(sig, prior, NULL);
 }
 
-static void prepare_cpu_thread(void) {
+static void prepare_cpu_thread(unsigned vcpu_index) {
     static __thread int done;
     if (done) return;
     done = 1;
@@ -120,8 +120,11 @@ static void prepare_cpu_thread(void) {
 
     const char *q = getenv("HV_QOS");
 #if TARGET_OS_IPHONE
-    /* Schedule guest vCPUs on P-cores while staying strictly below UI (USER_INTERACTIVE) */
-    qos_class_t c = QOS_CLASS_USER_INITIATED;
+    /* A20 Pro has two high-performance cores. Keep guest vCPUs 0/1 responsive
+     * while allowing iOS to place less critical vCPUs 2/3 more flexibly.
+     * QoS is a scheduler hint, not a hard core affinity. */
+    qos_class_t c = (getenv("HV_DUO_A20_PROFILE") && vcpu_index >= 2)
+                        ? QOS_CLASS_DEFAULT : QOS_CLASS_USER_INITIATED;
 #else
     qos_class_t c = QOS_CLASS_USER_INTERACTIVE;
 #endif
@@ -249,7 +252,7 @@ static void *kicker_thread(void *unused) {
 
 static void *secondary_thread(void *arg) {
     HvCpu *c = arg;
-    prepare_cpu_thread();
+    prepare_cpu_thread(c->index);
     int r = hv_run(c);
     if (!c->halted) {
         fprintf(stderr, "winvm: cpu %u stopped (%s) at pc=%llx el=%u\n",
@@ -287,7 +290,7 @@ void hv_winvm_flush_disks(void) {
 }
 
 int hv_winvm_run_cpu0(void) {
-    prepare_cpu_thread();
+    prepare_cpu_thread(0);
     for (;;) {
         int r = hv_run(&cpus[0]);
         hv_winvm_flush_disks();
