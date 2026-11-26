@@ -1,12 +1,12 @@
 # 13-inch iPad Pro M4 (16 GB): WindowsiOS profile
 
 ## Target hardware
-- iPad Pro 13-inch (M4), Wi-Fi \`iPad16,5\` or Cellular \`iPad16,6\`.
-- Only the **16 GiB** RAM configuration receives this profile. The runtime checks both \`hw.machine\` and \`hw.memsize\`; 8 GiB configurations and iPhone Duo retain the previous allocation sequence.
+- iPad Pro 13-inch (M4), Wi-Fi `iPad16,5` or Cellular `iPad16,6`.
+- Only the **16 GiB** RAM configuration receives this profile. The runtime checks both `hw.machine` and `hw.memsize`; 8 GiB configurations and iPhone Duo retain the previous allocation sequence.
 - Four guest vCPUs remain the default (matching the M4's four performance cores without artificially pinning threads).
 
 ## Guest RAM: request 12 GiB
-After JIT activation while the debugger is attached, \`winios_jit.c\` attempts **12,288 MiB** of ledger-exempt guest RAM on the target iPad. If the mapping cannot be created, it tries 10,240, 8,192, 6,144 MiB and the original smaller sizes. The real allocation size is passed into \`HvWinVmConfig.ram_mb\` and appears in the VM status and logs.
+After JIT activation while the debugger is attached, `winios_jit.c` attempts **12,288 MiB** of ledger-exempt guest RAM on the target iPad. If the mapping cannot be created, it tries 10,240, 8,192, 6,144 MiB and the original smaller sizes. The real allocation size is passed into `HvWinVmConfig.ram_mb` and appears in the VM status and logs.
 
 **Caution:** 12 GiB is the maximum requested guest capacity, **not guaranteed resident memory**. M4, iPadOS, GPU textures, JIT mappings and other apps still require host RAM. Ledger exemption does not create physical RAM or ensure immunity from system-wide memory pressure or termination. Validate sustained Windows loads, backgrounding, and thermal state on the actual 16 GiB iPad before relying on this setting. If unstable, use the lower RAM fallback and investigate memory pressure rather than bypassing safety checks.
 
@@ -22,9 +22,9 @@ The iPad's physical panel is **2752 × 2064** in landscape, a perfect 4:3 ratio.
 ## Verification
 Run the portable policy test:
 
-\`\`\`sh
+```sh
 cc -std=c11 -Wall -Wextra -Werror tests/test_ipad_profile.c -o /tmp/winios-ipad-profile-test
 /tmp/winios-ipad-profile-test
-\`\`\`
+```
 
 Then build an unsigned iPhoneOS ARM64 IPA using the repository's GitHub Actions workflow. The portable test checks model detection, strict 16 GiB guard, 12 GiB allocation preference, fallback order, legacy iPhone RAM policy, and 4:3 render budget; it **does not** prove that a physical device can reserve 12 GiB or boot Windows at that capacity. Those require an actual iPad M4 16 GiB.
