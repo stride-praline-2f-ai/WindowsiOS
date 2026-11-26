@@ -14,6 +14,14 @@
 
 ---
 
+## iPad Pro 13-inch M4 (16 GB) profile
+
+The 16 GiB M4 iPad Pro 13-inch (`iPad16,5` / `iPad16,6`) now has a separate device-specific runtime profile: Windows attempts **12 GiB guest RAM**, falling back to a smaller allocation if the reservation is rejected, and the iPad defaults to a full-screen 4:3 studio view. Metal drawable presentation is capped at **2048 × 1536** to reduce bandwidth compared with the panel's 2752 × 2064 native pixels.
+
+This does **not** upgrade the Windows guest GOP mode; stock EDK2 `ramfb` is limited to 1024 × 768 and lower. See [iPad M4 profile, memory caveats and testing](docs/IPAD_PRO_M4_PROFILE.md). The original iPhone Duo allocation policy remains unchanged.
+
+---
+
 ## Visual Showcase
 
 <table>
