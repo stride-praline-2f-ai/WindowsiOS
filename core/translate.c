@@ -479,7 +479,7 @@ static void put_helper(Emit *e, uint64_t pc, uint32_t insn, uint32_t op) {
     put(e, LDR_X(0, 28, 0));
 }
 
-/* d = n + imm for |imm| < 2^24; n and d are general registers, never SP. */
+/* d = n + imm for |imm| < 2^24. Nonzero immediates may use SP. */
 static void put_add_imm(Emit *e, int d, int n, int64_t imm) {
     if (imm == 0) {
         if (d != n) put(e, MOV_X(d, n));
@@ -1035,21 +1035,23 @@ static void translate_mem_impl(Emit *e, uint32_t insn, uint64_t pc, int from_exc
     int vec_kind = op.kind == HV_MEM_VEC_MULTI || op.kind == HV_MEM_VEC_SINGLE;
     int pair = op.kind == HV_MEM_PAIR;
     int rmw = op.kind == HV_MEM_CAS || op.kind == HV_MEM_ATOMIC;
-    int rm_used = op.mode == HV_ADDR_REG || (vec_kind && op.mode == HV_ADDR_POST && op.rm != 31);
-
-    uint32_t used = 0;
-    if (!literal) used |= 1u << op.rn;
-    if (!op.vec) used |= 1u << op.rt | (pair ? 1u << op.rt2 : 0) | (inline_casp ? 1u << (op.rt + 1) : 0);
-    if (rm_used) used |= 1u << op.rm;
-    if (rmw) used |= 1u << op.rs;
-    if (inline_casp) used |= 3u << op.rs;
-    /* Guest x6, x7 and x15 live in the HvCpu: their host registers are as free as ever. */
-    if (!hv_knob[HV_K_TEST3]) used &= ~(1u << 6 | 1u << 7 | 1u << 15);
-    uint8_t s[3];
-    for (int i = 0; i < 3; i++) s[i] = pick(&used);
+    /* Guest x6, x7 and x15 live in HvCpu. Only the diagnostic allocator
+       reserves their host names when an operand uses the guest register. */
+    uint8_t s[3] = {6, 7, 15};
+    int diagnostic = hv_knob[HV_K_TEST3];
+    if (diagnostic) {
+        int rm_used = op.mode == HV_ADDR_REG || (vec_kind && op.mode == HV_ADDR_POST && op.rm != 31);
+        uint32_t used = 0;
+        if (!literal) used |= 1u << op.rn;
+        if (!op.vec) used |= 1u << op.rt | (pair ? 1u << op.rt2 : 0) | (inline_casp ? 1u << (op.rt + 1) : 0);
+        if (rm_used) used |= 1u << op.rm;
+        if (rmw) used |= 1u << op.rs;
+        if (inline_casp) used |= 3u << op.rs;
+        for (int i = 0; i < 3; i++) s[i] = pick(&used);
+    }
     int A = s[0], T = s[1], U = s[2];
     uint32_t retry = e->n; /* a refilled TLB miss runs the access again from here */
-    spill(e, s, 3);
+    if (diagnostic) spill(e, s, 3);
 
     /* Grouped (see Group): plan_groups only puts plain single and pair accesses
        with an immediate offset on SP or an ordinary register here. */
@@ -1098,6 +1100,8 @@ static void translate_mem_impl(Emit *e, uint32_t insn, uint64_t pc, int from_exc
     int base = op.rn;
     if (role) {
         /* the address is in A already */
+    } else if (sp_base && op.imm && (op.mode == HV_ADDR_OFFSET || op.mode == HV_ADDR_PRE)) {
+        put_add_imm(e, A, 31, op.imm); /* ADD/SUB immediate accepts SP directly. */
     } else if (literal) {
         put_lit(e, A, pc + op.imm);
     } else {
@@ -1260,7 +1264,7 @@ static void translate_mem_impl(Emit *e, uint32_t insn, uint64_t pc, int from_exc
         }
         if (base_stolen && !sp_base) put(e, STR_X(T, 28, slot_of(op.rn)));
     }
-    unspill(e, s, 3);
+    if (diagnostic) unspill(e, s, 3);
     if (slow != ~0u) e->ool[slow].join = e->n;
     /* Stand-ins for x18/x28 and writeback may have used U. */
     if (role && U == 15 && !rt2_stolen && !(rt_stolen && rt == U) && op.mode == HV_ADDR_OFFSET) e->u_live = grp->slot + 1;
@@ -1658,8 +1662,7 @@ static int is_fp_insn(uint32_t insn) {
 }
 
 /* Returns 1 if the instruction ends the block. */
-static int translate_one(Emit *e, uint32_t insn, uint64_t pc) {
-    HvInsnKind kind = hv_classify(insn);
+static int translate_one(Emit *e, uint32_t insn, uint64_t pc, HvInsnKind kind) {
     if ((e->flags & HV_BLOCK_FPOFF) && kind != HV_INSN_UNDEFINED && is_fp_insn(insn)) {
         put_helper(e, pc, insn, HV_OP_FPTRAP);
         return 1;
@@ -1922,8 +1925,9 @@ static int group_op(const HvMemOp *op) {
 
 static void plan_groups(Emit *e, const uint32_t *code, uint32_t max, uint64_t va) {
     e->ngrp = 0;
+    if (e->nogroup) return;
     memset(e->gid, -1, sizeof e->gid);
-    if (e->nogroup || e->slow_mem) return;
+    if (e->slow_mem) return;
     int cur[32];
     int64_t delta[32];
     for (int r = 0; r < 32; r++) cur[r] = -1, delta[r] = 0;
@@ -2026,7 +2030,7 @@ static int emit_group_copies(Emit *e, const uint32_t *code, uint64_t va, uint32_
             e->cur_pc = va + 4ull * i;
             e->cur_i = i;
             e->u_prev = e->u_live = 0;
-            if (translate_one(e, code[i], va + 4ull * i)) return -1; /* cannot happen: groups hold no block ends */
+            if (translate_one(e, code[i], va + 4ull * i, hv_classify(code[i]))) return -1; /* cannot happen: groups hold no block ends */
         }
         put(e, B_OP);
         patch_branch(&e->w[e->n - 1], (int64_t)e->after[end] - (e->n - 1));
@@ -2071,9 +2075,9 @@ static int translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32
         e->cur_i = i;
         e->u_prev = e->u_live, e->u_live = 0;
         uint32_t n0 = e->n;
-        ended = translate_one(e, code[i], pc);
+        HvInsnKind k = hv_classify(code[i]);
+        ended = translate_one(e, code[i], pc, k);
         if (m->stats_interval) {
-            HvInsnKind k = hv_classify(code[i]);
             m->stats.kind_insns[k & 15]++;
             m->stats.kind_words[k & 15] += e->n - n0;
         }
