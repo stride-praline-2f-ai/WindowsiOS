@@ -227,6 +227,10 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
     return _vmRunning ? hv_winvm_display_frames() : 0;
 }
 
+- (BOOL)isM4IPadPro13With16GB {
+    return winios_is_m4_ipad_pro_13_16gb();
+}
+
 - (uint64_t)availableMemoryMB {
     return (uint64_t)(winios_available_memory_bytes() >> 20);
 }
