@@ -1,4 +1,4 @@
-name: Build iPhone Duo IPA
+name: Build WindowsiOS ARM64 IPA (Xcode 27 + Xcode 26 backup)
 
 on:
   workflow_dispatch:
@@ -38,7 +38,18 @@ jobs:
           /tmp/winios-ipad-profile-test
 
   ipa:
-    runs-on: xcode-27
+    name: IPA (${{ matrix.lane }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: xcode-27
+            xcode_major: '27'
+            lane: primary-xcode27
+          - runner: macos-26
+            xcode_major: '26'
+            lane: backup-xcode26
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     defaults:
       run:
@@ -54,7 +65,22 @@ jobs:
       - name: Install build tools
         run: |
           test "$(uname -m)" = arm64
+          # On macos-26 use an installed Xcode 26 even if the image's
+          # default developer directory changes in a future image revision.
+          if [[ "${{ matrix.xcode_major }}" == "26" ]]; then
+            for app in /Applications/Xcode_26*.app; do
+              if [[ -d "$app/Contents/Developer" ]]; then
+                echo "DEVELOPER_DIR=$app/Contents/Developer" >> "$GITHUB_ENV"
+                export DEVELOPER_DIR="$app/Contents/Developer"
+              fi
+            done
+          fi
           xcodebuild -version
+          detected="$(xcodebuild -version | awk '/^Xcode / { split($2,v,"."); print v[1] }')"
+          if [[ "$detected" != "${{ matrix.xcode_major }}" ]]; then
+            echo "::error::Expected Xcode ${{ matrix.xcode_major }} but found Xcode $detected" >&2
+            exit 1
+          fi
           xcrun --sdk iphoneos --show-sdk-version
           brew install xcodegen meson ninja pkg-config python
 
@@ -75,7 +101,7 @@ jobs:
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: WindowsiOS-iPhone-Duo-${{ github.run_number }}
+          name: WindowsiOS-${{ matrix.lane }}-${{ github.run_number }}
           path: build/artifacts/*
           if-no-files-found: error
           retention-days: 7
@@ -84,7 +110,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: WindowsiOS-build-logs-${{ github.run_number }}
+          name: WindowsiOS-build-logs-${{ matrix.lane }}-${{ github.run_number }}
           path: |
             build/logs/
             work/ios_deps_build/*.log
