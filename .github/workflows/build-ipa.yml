@@ -85,7 +85,9 @@ jobs:
           xcode_version_output="$(xcodebuild -version)"
           printf '%s\n' "$xcode_version_output"
           if [[ ! "$xcode_version_output" =~ ^Xcode[[:space:]]+27([.]|[[:space:]]|$) ]]; then
-            echo "::error::This build requires Xcode 27; found: ${xcode_version_output%%
+            echo "::error::This build requires Xcode 27; installed version is: $xcode_version_output" >&2
+            exit 1
+          fi
           xcrun --sdk iphoneos --show-sdk-version
           brew install xcodegen meson ninja pkg-config python
 
