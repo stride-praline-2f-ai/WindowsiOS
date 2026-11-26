@@ -862,9 +862,8 @@ int hv_tlb_refill(HvCpu *cpu, uint64_t va, uint32_t flags) {
     uint64_t off = va & PAGE_MASK;
     if (off + bytes > PAGE_MASK + 1) return 1; /* crosses into the next page: the helper */
     if ((flags & (1u << 10)) && (va & (bytes - 1))) return 1; /* unaligned ordered access: fault in helper */
-    /* In the page, but where the fast check cannot pass (it allows HV_TLB_ADJ bytes of every access, so a small one in a
-       page's last HV_TLB_ADJ bytes misses): a refill would come straight back here. */
-    if (bytes <= HV_TLB_ADJ + 1 && off + HV_TLB_ADJ > PAGE_MASK) return 1;
+    /* The conservative mode can still reject a narrow in-page access. */
+    if (!hv_knob[HV_K_RECHECK] && bytes < HV_TLB_ADJ + 1 && off + HV_TLB_ADJ > PAGE_MASK) return 1;
     uint64_t rkey = (va ^ ((uint64_t)flags << 49)) | 1ull;
     if (cpu->pc_state) {
         if (cpu->pc_state->last_refill_key == rkey) {

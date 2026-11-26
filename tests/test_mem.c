@@ -92,6 +92,13 @@ static void mmu_on(HvCpu *cpu) {
     hv_tlb_flush(cpu);
 }
 
+/* Browser loads and stores use the EL0 TLB. Run the page-end program with
+   grouping disabled so every width exercises its own tag/addend lookup. */
+static void at_el0(HvCpu *cpu) {
+    cpu->el = 0;
+    cpu->spsel = 0;
+}
+
 /* A device that logs every access and answers reads with offset * 0x01010101 + size. */
 typedef struct { uint64_t off, val; unsigned size, write; } DevAccess;
 static DevAccess dev_log[32];
@@ -194,10 +201,25 @@ int main(void) {
             failed += bad != 0;
         }
     }
+    {
+        const TestProgram p = TEST_PROGRAM(pageend);
+        static HvCpu init, native, jit;
+        seed_cpu(&init, 37, (uint64_t)(uintptr_t)stack + STACK_SIZE / 2);
+        init.x[0] = (uint64_t)(uintptr_t)data;
+        run_native(&p, &init, &native, reset_data);
+        memcpy(native_data, data, DATA_SIZE);
+        reset_data();
+        hv_knob[HV_K_GROUPS] = 0;
+        hv_flush_blocks(&m);
+        int bad = run_jit(&m, &p, &init, &jit, at_el0) ||
+                  compare_cpus(p.name, &native, &jit) || memcmp(native_data, data, DATA_SIZE);
+        printf("pageend EL0: %s\n", bad ? "FAIL" : "ok");
+        failed += bad != 0;
+    }
     hv_machine_add_mmio(&m, 0x20000000, 0x1000, NULL, dev_read, dev_write, "test device");
     m.slow_mem = 0;
     failed += test_mmio(&m);
-    printf("%zu programs x 3 modes + mmio, %d failures, %llu chained exits\n", count, failed,
+    printf("%zu programs x 3 modes + EL0 pageend + mmio, %d failures, %llu chained exits\n", count, failed,
            (unsigned long long)m.stats.chained);
     return failed != 0;
 }
