@@ -572,7 +572,9 @@ struct SessionView: View {
                     .foregroundStyle(.white)
             }
 
-            Text("DEVICE_NAME = IPHONE_DUO_ARM64")
+            Text(WinIOSBridge.shared.isM4IPadPro13With16GB
+                 ? "DEVICE_NAME = IPAD_PRO_13_M4_16GB"
+                 : "DEVICE_NAME = IPHONE_DUO_ARM64")
                 .font(.system(size: 10, weight: .regular, design: .monospaced))
                 .tracking(1.4)
                 .foregroundStyle(Color(red: 0.72, green: 0.82, blue: 1.0).opacity(0.65))

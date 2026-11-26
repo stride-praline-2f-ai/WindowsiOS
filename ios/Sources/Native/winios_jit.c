@@ -4,6 +4,7 @@
  * Adapted from Henge (Leviidev/Henge, GPL-2.0-or-later).
  */
 #include "winios_jit.h"
+#include "winios_ipad_profile.h"
 #include "winvirt.h"
 
 #include <TargetConditionals.h>
@@ -16,6 +17,7 @@
 #include <mach/vm_map.h>
 #include <os/log.h>
 #include <os/proc.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -87,17 +89,44 @@ static uint64_t g_guest_ram_bytes;
 static atomic_bool g_jit_live;
 static char g_status[256] = "Not initialized";
 
+static pthread_once_t g_ipad_profile_once = PTHREAD_ONCE_INIT;
+static bool g_is_m4_ipad13_16gb;
+
+static void detect_m4_ipad13_16gb(void) {
+    char machine[64] = {0};
+    size_t machine_len = sizeof(machine);
+    uint64_t physical_bytes = 0;
+    size_t bytes_len = sizeof(physical_bytes);
+    if (sysctlbyname("hw.machine", machine, &machine_len, NULL, 0) != 0 ||
+        sysctlbyname("hw.memsize", &physical_bytes, &bytes_len, NULL, 0) != 0)
+        return;
+    machine[sizeof(machine) - 1] = '\0';
+    g_is_m4_ipad13_16gb =
+        winios_profile_is_m4_ipad13_16gb(machine, physical_bytes >> 20);
+    if (g_is_m4_ipad13_16gb)
+        WINIOS_LOG("13-inch M4 iPad Pro 16 GiB detected; requesting 12288 MiB guest RAM");
+}
+
+bool winios_is_m4_ipad_pro_13_16gb(void) {
+    pthread_once(&g_ipad_profile_once, detect_m4_ipad13_16gb);
+    return g_is_m4_ipad13_16gb;
+}
+
 static void prealloc_ledger_exempt_ram(void) {
     if (g_guest_ram) return;
     uint64_t phys_mem = 0;
     size_t len = sizeof phys_mem;
     sysctlbyname("hw.memsize", &phys_mem, &len, NULL, 0);
     uint64_t phys_mb = phys_mem >> 20;
-    /* Size Guest RAM to fit comfortably within iOS 36-bit user VA ceiling alongside TXM JIT RX/RW + JIT tables */
-    static const uint64_t candidates_mb[] = {4608, 4096, 3584, 3072, 2560, 2048};
-    for (size_t i = 0; i < sizeof(candidates_mb) / sizeof(candidates_mb[0]); i++) {
+    /* The 16 GiB 13-inch M4 iPad Pro attempts 12 GiB first, with
+     * graceful lower-capacity fallbacks if allocation is refused.
+     * All other devices retain their existing RAM candidate sequence. */
+    uint64_t candidates_mb[10];
+    size_t count = winios_profile_ram_candidates(
+        winios_is_m4_ipad_pro_13_16gb(), phys_mb,
+        candidates_mb, sizeof(candidates_mb) / sizeof(candidates_mb[0]));
+    for (size_t i = 0; i < count; i++) {
         uint64_t mb = candidates_mb[i];
-        if (phys_mb > 0 && mb + 2560 > phys_mb) continue;
         uint8_t *p = hv_alloc_no_footprint(mb << 20);
         if (p) {
             g_guest_ram = p;

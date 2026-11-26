@@ -140,6 +140,9 @@ final class VMViewModel: ObservableObject {
         case .fullScreen:
             return false
         case .auto:
+            // An iPad has no hinge. Default to the full 4:3 Windows canvas,
+            // not the Duo's portrait half-screen keyboard layout.
+            if WinIOSBridge.shared.isM4IPadPro13With16GB { return false }
             // Hardware hinge folded into laptop posture (partiallyOpen == 2, or live hinge angle 30°..166°)
             if hingeStatusRaw == 2 {
                 return true

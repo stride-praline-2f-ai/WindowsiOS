@@ -22,6 +22,7 @@ typedef void (^WinIOSStateCallback)(void);
 @property (nonatomic, readonly) uint32_t framebufferHeight;
 @property (nonatomic, readonly) uint64_t presentedFrames;
 @property (nonatomic, readonly) uint64_t availableMemoryMB;
+@property (nonatomic, readonly) BOOL isM4IPadPro13With16GB;
 @property (nonatomic, readonly) BOOL usbKeyboardReady;
 @property (nonatomic, readonly) BOOL usbTabletReady;
 @property (nonatomic, readonly) uint64_t usbEventsDelivered;

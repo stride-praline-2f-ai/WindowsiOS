@@ -94,7 +94,21 @@ final class MetalCanvasUIView: UIView, UIKeyInput {
         metalLayer.contentsScale = scale
         let w = max(1.0, bounds.width * scale)
         let h = max(1.0, bounds.height * scale)
-        metalLayer.drawableSize = CGSize(width: w, height: h)
+        // 13-inch M4 iPad panel: 2752 x 2064 native (4:3).
+        // Draw at no more than 2048 x 1536 (same aspect ratio) to avoid
+        // excessive Metal drawable bandwidth and thermal load. This is a
+        // host-side presentation budget, not a guest GOP resolution change.
+        if WinIOSBridge.shared.isM4IPadPro13With16GB {
+            let maxW: CGFloat = w >= h ? 2048 : 1536
+            let maxH: CGFloat = w >= h ? 1536 : 2048
+            let factor = min(1.0, min(maxW / w, maxH / h))
+            metalLayer.drawableSize = CGSize(
+                width: max(1, (w * factor).rounded(.down)),
+                height: max(1, (h * factor).rounded(.down))
+            )
+        } else {
+            metalLayer.drawableSize = CGSize(width: w, height: h)
+        }
         if let winBounds = window?.bounds.size, winBounds.width > 0 {
             WinIOSBridge.shared.updateScreenSize(winBounds, scale: scale)
         }

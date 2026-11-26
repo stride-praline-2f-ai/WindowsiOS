@@ -30,6 +30,8 @@ WinIosDualMapping winios_jit_mapping(void);
 void *winios_jit_guest_ram(uint64_t *out_bytes);
 const char *winios_jit_status_text(void);
 size_t winios_available_memory_bytes(void);
+/* True only for 13-inch M4 iPad Pro hardware identifiers with 16 GiB physical RAM. */
+bool winios_is_m4_ipad_pro_13_16gb(void);
 
 #ifdef __cplusplus
 }
