@@ -80,11 +80,50 @@ jobs:
       - name: Install build tools
         run: |
           test "$(uname -m)" = arm64
-          xcodebuild -version
-          xcodebuild -version | head -n 1 | grep -Eq '^Xcode 27([. ]|$)' || {
-            echo "This build requires Xcode 27; refusing to produce an Xcode 16 IPA." >&2
+          # Capture xcodebuild output exactly once. Piping it through head -n 1
+          # closes stdout early and can abort the Xcode CLI with SIGPIPE.
+          xcode_version_output="$(xcodebuild -version)"
+          printf '%s\n' "$xcode_version_output"
+          if [[ ! "$xcode_version_output" =~ ^Xcode[[:space:]]+27([.]|[[:space:]]|$) ]]; then
+            echo "::error::This build requires Xcode 27; found: ${xcode_version_output%%
+          xcrun --sdk iphoneos --show-sdk-version
+          brew install xcodegen meson ninja pkg-config python
+
+      - name: Build iOS dependencies
+        run: bash scripts/build_ios_deps.sh
+
+      - name: Build and package ARM64 device app
+        run: bash scripts/ci_build_ipa.sh
+
+      - name: Sign for registered devices (optional)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.sign_ipa }}
+        env:
+          IOS_CERTIFICATE_P12_BASE64: ${{ secrets.IOS_CERTIFICATE_P12_BASE64 }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_PROFILE_BASE64: ${{ secrets.IOS_PROFILE_BASE64 }}
+        run: python3 scripts/ci_sign_app.py
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: WindowsiOS-iPhone-Duo-${{ github.run_number }}
+          path: build/artifacts/*
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload build diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: WindowsiOS-build-logs-${{ github.run_number }}
+          path: |
+            build/logs/
+            work/ios_deps_build/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+\n'*}" >&2
             exit 1
-          }
+          fi
           xcrun --sdk iphoneos --show-sdk-version
           brew install xcodegen meson ninja pkg-config python
 
