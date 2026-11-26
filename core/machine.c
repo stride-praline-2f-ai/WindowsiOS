@@ -55,8 +55,7 @@ static int init_rest(HvMachine *m) {
     /* The TLB layout (cpu.h): HV_TLBT from the environment here too, so the Mac tool and the tests can pick it. */
     hv_knob[HV_K_TLBT] = getenv("HV_TLBT") ? atoi(getenv("HV_TLBT")) : 1; /* table-major unless asked: 9-20% faster in 5 of 6 paired rounds of the mix */
     hv_tlb_tmajor = hv_knob[HV_K_TLBT] != 0;
-    /* 4 KB pages expose stack accesses in the last 15 bytes of every page (500K+/s on Windows):
-       exact OOL recheck avoids trapping to C on every stack push/pop at page top. */
+    /* Check the last byte inline so accesses near a page end stay on the fast path. */
     hv_knob[HV_K_RECHECK] = getenv("HV_RECHECK") ? atoi(getenv("HV_RECHECK")) : 1;
     /* As many blocks as the region holds (a block is at least ~160 bytes of
        code), so the region filling, not this table, is what flushes; two
