@@ -144,6 +144,8 @@ PROGRAM p_sysregs
     mov x0, #2000
 1:  subs x0, x0, #1
     b.ne 1b
+    mrs x15, pmccntr_el0
+    mov x20, x15
     mrs x9, cntvct_el0
     mrs x10, cntfrq_el0
     mrs x11, id_aa64mmfr0_el1

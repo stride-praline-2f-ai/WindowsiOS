@@ -53,6 +53,9 @@ xcodebuild \
 APP=build/DerivedData/Build/Products/Release-iphoneos/WindowsiOS.app
 test -f "$APP/WindowsiOS"
 xcrun lipo "$APP/WindowsiOS" -verify_arch arm64
+cmp build/firmware/m4-1600x1200.fd "$APP/m4-1600x1200.fd"
+cmp build/firmware/EDK2-License.txt "$APP/EDK2-License.txt"
+git rev-parse HEAD > "$APP/build-revision.txt"
 mkdir -p build/ipa/Payload
 ditto "$APP" build/ipa/Payload/WindowsiOS.app
 (cd build/ipa && zip -qry ../artifacts/WindowsiOS-iPhone-Duo-unsigned.ipa Payload)
@@ -64,7 +67,7 @@ Architecture: ARM64 iPhoneOS (not Simulator)
 Signing: unsigned, unless accompanied by a development.ipa
 $HINGE_MODE
 The Duo layout is included. Physical device compatibility has not been verified by CI.
-Windows, firmware and drivers are not included.
+Includes the 1600x1200 M4 ArmVirt firmware. Windows and guest drivers are supplied separately.
 Install with valid signing, then supply VM files and enable JIT on the device.
 EOF
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then

@@ -27,6 +27,12 @@ targets:
           - "Resources/**"
       - path: Sources/Resources/henge-jit.js
         buildPhase: resources
+      - path: ../build/firmware/m4-1600x1200.fd
+        optional: true
+        buildPhase: resources
+      - path: ../build/firmware/EDK2-License.txt
+        optional: true
+        buildPhase: resources
     info:
       path: Sources/Info.plist
       properties:

@@ -14,7 +14,8 @@ uint64_t hv_timer_update(HvGic *g, HvCpu *cpu) {
     uint64_t now = hv_counter();
     uint64_t v = one(g, (int)cpu->index, HV_PPI_VTIMER, cpu->cntv_ctl, cpu->cntv_cval, now, cpu->cntvoff);
     uint64_t p = one(g, (int)cpu->index, HV_PPI_PTIMER, cpu->cntp_ctl, cpu->cntp_cval, now, 0);
-    if (!v) return p;
-    if (!p) return v;
-    return v < p ? v : p;
+    uint64_t due = v;
+    if (!due || (p && p < due)) due = p;
+    if (cpu->pc_state) __atomic_store_n(&cpu->pc_state->next_timer_due, due, __ATOMIC_RELEASE);
+    return due;
 }

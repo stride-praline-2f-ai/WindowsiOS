@@ -168,6 +168,10 @@ typedef struct HvPerCpu {
     pthread_mutex_t wake_mu;
     pthread_cond_t wake_cv;
     int wake_pending;
+    uint64_t next_timer_due; /* published by the timer owner, read by the kicker */
+    uint64_t wait_ticks, wait_signals, wait_timeouts, wait_early, wait_irq_pending;
+    uint64_t periodic_kicks;
+    unsigned last_raised_intid;
     /* Work other CPUs ask of this one (only the owner may touch its TLB and
        branch cache while it runs). Posting bumps req_seq; the owner does the
        work at its next dispatcher entry and publishes ack_seq. */

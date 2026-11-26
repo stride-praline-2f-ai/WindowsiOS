@@ -173,7 +173,7 @@ int hv_winvirt_create(HvWinVirt *b, HvMachine *m, HvCpu *cpu, int ncpus, uint64_
     }
 
     /* 4. Register Guest RAM at 0x40000000 */
-    hv_machine_add_ram(m, WINVIRT_RAM_PA, ram_size, b->ram, 0);
+    if (hv_machine_add_ram(m, WINVIRT_RAM_PA, ram_size, b->ram, 0) != 0) return -1;
 
     /* 5. Interrupt controller: GICv3 + GICv3 ITS (LPI MSI-X for NVMe, xHCI, VirtIO) */
     b->gic = hv_gicv3_create(m, WINVIRT_GIC_DIST_PA, WINVIRT_GIC_REDIST_PA);
