@@ -110,6 +110,8 @@ int main(void) {
         check("sysregs", "DAIF after clr", c.x[5], 0x300);
         check("sysregs", "NZCV", c.x[7], 0x60000000);
         check("sysregs", "CNTVCT advances", c.x[9] > c.x[8], 1);
+        check("sysregs", "PMCCNTR written to guest X15 uses the same timebase",
+              (c.x[20] >> 7) >= c.x[8] && (c.x[20] >> 7) <= c.x[9], 1);
         check("sysregs", "CNTFRQ", c.x[10], 24000000);
         check("sysregs", "4K granule advertised", (c.x[11] >> 28) & 0xf, 0);
         check("sysregs", "16K granule advertised", (c.x[11] >> 20) & 0xf, 1);

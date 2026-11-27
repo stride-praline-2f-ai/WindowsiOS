@@ -4,11 +4,14 @@
 #include "hvsparse.h"
 #include "share.h"
 #include "winios_jit.h"
+#include "winios_profile.h"
 #include "winvm.h"
 
 #import <AVFoundation/AVFoundation.h>
 #import <UIKit/UIKit.h>
 #include <mach/mach_time.h>
+#include <mach/mach.h>
+#include <sys/resource.h>
 #include <os/lock.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
@@ -18,13 +21,9 @@
 
 static WinIOSBridge *s_shared_bridge = nil;
 
-/* Hardware-specific choices are limited to the iPhone Duo (A20 Pro).
- * Do not apply its scheduling/audio policy to M-series iPads or Macs. */
+/* The phone has its own scheduling and audio policy. */
 static BOOL winios_is_iphone_duo(void) {
-    char machine[64] = {0};
-    size_t n = sizeof machine;
-    return sysctlbyname("hw.machine", machine, &n, NULL, 0) == 0 &&
-           strcmp(machine, "iPhone19,4") == 0;
+    return winios_device_profile() == WINIOS_IPHONE_DUO;
 }
 
 @interface WinIOSBridge () {
@@ -37,6 +36,7 @@ static BOOL winios_is_iphone_duo(void) {
     CFAbsoluteTime _bootStartTime;
     uint64_t _configuredRamMB;
     int _configuredCPUs;
+    NSString *_firmwareName;
     CAMetalLayer *__weak _pendingLayer;
     uint64_t _diagTickCount;
     uint64_t _lastMachTicks;
@@ -370,14 +370,20 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
     return NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject ?: NSTemporaryDirectory();
 }
 
+- (NSString *)bundledFirmware {
+    if (winios_device_profile() != WINIOS_M4_13_16GB || getenv("HV_M4_STOCK_FIRMWARE")) return nil;
+    return [[NSBundle mainBundle] pathForResource:@"m4-1600x1200" ofType:@"fd"];
+}
+
 - (NSString *)machineDirectory {
     NSString *docs = [self documentsPath];
     NSString *win11Dir = [docs stringByAppendingPathComponent:@"Machines/Win11"];
     NSFileManager *fm = [NSFileManager defaultManager];
-    if ([fm fileExistsAtPath:[win11Dir stringByAppendingPathComponent:@"code.fd"]]) {
+    NSString *marker = [self bundledFirmware] ? @"vars.fd" : @"code.fd";
+    if ([fm fileExistsAtPath:[win11Dir stringByAppendingPathComponent:marker]]) {
         return win11Dir;
     }
-    if ([fm fileExistsAtPath:[docs stringByAppendingPathComponent:@"code.fd"]]) {
+    if ([fm fileExistsAtPath:[docs stringByAppendingPathComponent:marker]]) {
         return docs;
     }
     [fm createDirectoryAtPath:win11Dir withIntermediateDirectories:YES attributes:nil error:nil];
@@ -399,7 +405,7 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
 - (BOOL)hasProvisionedMachine {
     NSString *dir = [self machineDirectory];
     NSFileManager *fm = [NSFileManager defaultManager];
-    if (![fm fileExistsAtPath:[dir stringByAppendingPathComponent:@"code.fd"]]) return NO;
+    if (![self bundledFirmware] && ![fm fileExistsAtPath:[dir stringByAppendingPathComponent:@"code.fd"]]) return NO;
     if (![fm fileExistsAtPath:[dir stringByAppendingPathComponent:@"vars.fd"]]) return NO;
     return [self hasRawDiskImageAt:dir] || [self needsSparseUnpack];
 }
@@ -512,10 +518,18 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
         ramMB = preallocBytes >> 20;
     } else {
         uint64_t availMB = [self availableMemoryMB];
+        if (winios_device_profile() == WINIOS_M4_13_16GB && availMB < 3072) {
+            _vmStatus = @"Insufficient available memory for the 2 GiB minimum guest and 1 GiB host reserve";
+            dispatch_async(_diagQueue, ^{ [self writeDiagnosticsSnapshot]; });
+            [self notifyChanged];
+            return;
+        }
         if (availMB >= 5000) ramMB = 4096;
         else if (availMB >= 4200) ramMB = 3584;
         else if (availMB < 3400 && availMB > 1800) ramMB = (availMB - 768) & ~127ull;
         else if (availMB <= 1800) ramMB = 2048;
+        if (winios_device_profile() == WINIOS_M4_13_16GB && ramMB + 1024 > availMB)
+            ramMB = (availMB - 1024) & ~127ull;
     }
 
     NSString *sharedDir = [[self documentsPath] stringByAppendingPathComponent:@"Shared"];
@@ -525,7 +539,8 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
     NSString *shareSock = [rawTmp stringByAppendingPathComponent:@"s"];
     unlink(shareSock.fileSystemRepresentation);
 
-    NSString *codePath = [dir stringByAppendingPathComponent:@"code.fd"];
+    NSString *codePath = [self bundledFirmware] ?: [dir stringByAppendingPathComponent:@"code.fd"];
+    _firmwareName = codePath.lastPathComponent;
     NSString *varsPath = [dir stringByAppendingPathComponent:@"vars.fd"];
     NSString *diskPath = [dir stringByAppendingPathComponent:@"windows11.img"];
 
@@ -634,7 +649,8 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
         BOOL duoCool = winios_is_iphone_duo() && cool && strcmp(cool, "0") != 0;
         BOOL captureDuo = !winios_is_iphone_duo() ||
                           (duoCool ? _diagTickCount == 1u : (_diagTickCount % 4u == 0u));
-        if ((uptime <= 240.0 && captureDuo) || getenv("WINIOS_ALWAYS_SCREENSHOT") != NULL) {
+        BOOL capture = winios_device_profile() == WINIOS_M4_13_16GB ? _diagTickCount == 1u : captureDuo;
+        if ((uptime <= 240.0 && capture) || getenv("WINIOS_ALWAYS_SCREENSHOT") != NULL) {
             NSString *docs = [self documentsPath];
             NSString *tmpPng = [docs stringByAppendingPathComponent:@"latest_screen.png.tmp"];
             NSString *dstPng = [docs stringByAppendingPathComponent:@"latest_screen.png"];
@@ -644,6 +660,64 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
         }
     }
     [self notifyChanged];
+}
+
+/* Only collect thread timings while a phase marker is present in Files. */
+- (void)recordPerformancePhase:(NSString *)docs {
+    NSString *marker = [docs stringByAppendingPathComponent:@"vm-trace-phase.txt"];
+    NSString *phase = [[NSString stringWithContentsOfFile:marker encoding:NSUTF8StringEncoding error:nil]
+                       stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!phase || ![@[@"desktop", @"edge-idle", @"speedometer"] containsObject:phase]) return;
+    HvMachine *machine = hv_winvm_machine();
+    if (!machine) return;
+    NSMutableArray *cpus = [NSMutableArray array];
+    for (int i = 0; i < _configuredCPUs; i++) {
+        HvPerCpu *p = &machine->percpu[i];
+#define SAMPLE(field) @(__atomic_load_n(&p->field, __ATOMIC_RELAXED))
+        [cpus addObject:@{@"cpu": @(i), @"wait_ticks": SAMPLE(wait_ticks), @"signaled": SAMPLE(wait_signals),
+                          @"timeout": SAMPLE(wait_timeouts), @"early": SAMPLE(wait_early),
+                          @"pending_irq": SAMPLE(wait_irq_pending), @"last_intid": SAMPLE(last_raised_intid),
+                          @"deadline_ticks": SAMPLE(next_timer_due), @"periodic_kicks": SAMPLE(periodic_kicks)}];
+#undef SAMPLE
+    }
+    NSMutableArray *threads = [NSMutableArray array];
+    thread_act_array_t ports = NULL;
+    mach_msg_type_number_t count = 0;
+    if (task_threads(mach_task_self(), &ports, &count) == KERN_SUCCESS) {
+        for (mach_msg_type_number_t i = 0; i < count; i++) {
+            thread_extended_info_data_t info;
+            thread_identifier_info_data_t ident;
+            mach_msg_type_number_t n = THREAD_EXTENDED_INFO_COUNT, k = THREAD_IDENTIFIER_INFO_COUNT;
+            if (thread_info(ports[i], THREAD_EXTENDED_INFO, (thread_info_t)&info, &n) == KERN_SUCCESS &&
+                thread_info(ports[i], THREAD_IDENTIFIER_INFO, (thread_info_t)&ident, &k) == KERN_SUCCESS) {
+                [threads addObject:@{@"id": @(ident.thread_id),
+                                     @"name": [NSString stringWithUTF8String:info.pth_name] ?: @"",
+                                     @"user_ns": @(info.pth_user_time), @"system_ns": @(info.pth_system_time)}];
+            }
+            mach_port_deallocate(mach_task_self(), ports[i]);
+        }
+        vm_deallocate(mach_task_self(), (vm_address_t)ports, count * sizeof(*ports));
+    }
+    struct rusage usage = {0};
+    getrusage(RUSAGE_SELF, &usage);
+    uint64_t cpuUs = (uint64_t)(usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) * 1000000 +
+                     usage.ru_utime.tv_usec + usage.ru_stime.tv_usec;
+    NSDictionary *row = @{@"phase": phase, @"uptime_s": @(CFAbsoluteTimeGetCurrent() - _bootStartTime),
+                          @"mach_ticks": @(mach_absolute_time()), @"process_cpu_us": @(cpuUs),
+                          @"invalidation_slots_examined": @(__atomic_load_n(&machine->xchain_examined, __ATOMIC_RELAXED)),
+                          @"invalidation_slots_removed": @(__atomic_load_n(&machine->xchain_removed, __ATOMIC_RELAXED)),
+                          @"jit_generation": @(__atomic_load_n(&machine->jit_gen, __ATOMIC_RELAXED)),
+                          @"thermal": @(NSProcessInfo.processInfo.thermalState),
+                          @"cpus": cpus, @"threads": threads};
+    NSData *data = [NSJSONSerialization dataWithJSONObject:row options:0 error:nil];
+    if (!data) return;
+    NSString *path = [docs stringByAppendingPathComponent:@"vm-perf.jsonl"];
+    FILE *f = fopen(path.fileSystemRepresentation, "a");
+    if (f) {
+        fwrite(data.bytes, 1, data.length, f);
+        fputc('\n', f);
+        fclose(f);
+    }
 }
 
 - (void)writeDiagnosticsSnapshot {
@@ -669,6 +743,7 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
     int coolModeEnabled = configuredCoolMode && strcmp(configuredCoolMode, "0") != 0;
     double wfiIdlePct = _lastWfiIdlePct;
     if (running) {
+        [self recordPerformancePhase:docs];
         hv_winvm_usb_stats(&kbdReady, &tabReady, &usbDelivered);
         hv_winvm_engine_stats(&jitUsedBytes, &jitCapBytes, &jitFullFlushes, &wfiTicks);
         hv_winvm_audio_stats(&audioUnderruns, &audioDroppedBytes, &audioQueuedMs);
@@ -692,7 +767,15 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
     double hingeDeg = _hingeAngleDegrees;
     os_unfair_lock_unlock(&_metricsLock);
 
+    static NSString *revision;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSString *path = [[NSBundle mainBundle] pathForResource:@"build-revision" ofType:@"txt"];
+        if (path) revision = [[NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil]
+                              stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    });
     NSString *txt = [NSString stringWithFormat:
+        @"build_revision: %@\n"
         @"vm_running: %@\n"
         @"vm_status: %@\n"
         @"jit_live: %@\n"
@@ -700,6 +783,10 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
         @"uptime_sec: %.1f\n"
         @"cpus: %d\n"
         @"ram_mb: %llu\n"
+        @"device_profile: %@\n"
+        @"firmware: %@\n"
+        @"ram_target_mib: %u\n"
+        @"ram_selection: %s\n"
         @"avail_mem_mb: %llu\n"
         @"jit_used_mb: %.1f\n"
         @"jit_cap_mb: %.0f\n"
@@ -724,6 +811,7 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
         @"hinge_status: %ld\n"
         @"hinge_angle_deg: %.1f\n"
         @"screen_pts: %.0fx%.0f @%.0fx\n",
+        revision ?: @"local",
         running ? @"true" : @"false",
         _vmStatus ?: @"",
         self.isJITLive ? @"true" : @"false",
@@ -731,6 +819,10 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
         uptime,
         _configuredCPUs,
         _configuredRamMB,
+        winios_device_profile() == WINIOS_M4_13_16GB ? @"M4-13-16GB" : winios_is_iphone_duo() ? @"Duo" : @"standard",
+        _firmwareName ?: @"pending",
+        winios_device_profile() == WINIOS_M4_13_16GB ? 12288u : 4608u,
+        winios_ram_selection_reason(),
         [self availableMemoryMB],
         (double)jitUsedBytes / (1024.0 * 1024.0),
         (double)jitCapBytes / (1024.0 * 1024.0),

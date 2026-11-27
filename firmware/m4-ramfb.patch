@@ -1,0 +1,27 @@
+--- a/OvmfPkg/QemuRamfbDxe/QemuRamfb.c
++++ b/OvmfPkg/QemuRamfbDxe/QemuRamfb.c
+@@ -46,12 +46,4 @@ STATIC EFI_GRAPHICS_OUTPUT_MODE_INFORMATION  mQemuRamfbModeInfo[] = {
+     0,    // Version
+-    640,  // HorizontalResolution
+-    480,  // VerticalResolution
+-  },{
+-    0,    // Version
+-    800,  // HorizontalResolution
+-    600,  // VerticalResolution
+-  },{
+-    0,    // Version
+-    1024, // HorizontalResolution
+-    768,  // VerticalResolution
++    1600, // HorizontalResolution
++    1200, // VerticalResolution
+   }
+@@ -316,6 +308,6 @@ InitializeQemuRamfb (
+   //
+-  // 800 x 600
++  // Default to the M4 profile's sole advertised GOP mode.
+   //
+-  QemuRamfbGraphicsOutputSetMode (&mQemuRamfbGraphicsOutput, 1);
++  QemuRamfbGraphicsOutputSetMode (&mQemuRamfbGraphicsOutput, 0);
+-
++
+   //

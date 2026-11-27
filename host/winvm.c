@@ -19,6 +19,7 @@
 #include "dispatch.h"
 #include "net_slirp.h"
 #include "share.h"
+#include "sysreg.h"
 
 static HvMachine m;
 static HvCpu cpus[HV_MAX_CPUS];
@@ -135,6 +136,9 @@ static void prepare_cpu_thread(unsigned vcpu_index) {
     static __thread int done;
     if (done) return;
     done = 1;
+    char name[32];
+    snprintf(name, sizeof name, "Windows vCPU %u", vcpu_index);
+    pthread_setname_np(name);
     stack_t ss = {.ss_sp = malloc(1u << 16), .ss_size = 1u << 16, .ss_flags = 0};
     if (ss.ss_sp) sigaltstack(&ss, NULL);
     sigset_t set;
@@ -302,9 +306,25 @@ static void *kicker_thread(void *unused) {
     if (getenv("HV_DUO_A20_PROFILE"))
         (void)pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
 #endif
+    /* CPU 0 polls host devices. Secondary virtual timers publish their next
+       deadline on every timer register write as well as dispatcher ticks. */
+    int targeted = getenv("HV_DUO_A20_PROFILE") && !getenv("HV_LEGACY_KICKER") && !m.big_lock_on;
+    pthread_setname_np("Windows guest timer");
     while (!atomic_load_explicit(&stop_requested, memory_order_relaxed)) {
         usleep(hv_winvm_kicker_interval_us());
-        hv_machine_kick_all(&m);
+        if (!targeted) {
+            hv_machine_kick_all(&m);
+            for (int i = 0; i < ncpus; i++)
+                __atomic_fetch_add(&m.percpu[i].periodic_kicks, 1, __ATOMIC_RELAXED);
+            continue;
+        }
+        uint64_t now = hv_counter();
+        for (int i = 0; i < ncpus; i++) {
+            uint64_t due = __atomic_load_n(&m.percpu[i].next_timer_due, __ATOMIC_ACQUIRE);
+            if (i && (!due || now < due)) continue;
+            hv_cpu_kick(&cpus[i]);
+            __atomic_fetch_add(&m.percpu[i].periodic_kicks, 1, __ATOMIC_RELAXED);
+        }
     }
     return NULL;
 }
@@ -483,5 +503,10 @@ void hv_winvm_engine_stats(uint64_t *jit_used_bytes, uint64_t *jit_cap_bytes,
     if (jit_used_bytes) *jit_used_bytes = (uint64_t)m.jit.used * 4ull;
     if (jit_cap_bytes) *jit_cap_bytes = (uint64_t)m.jit.capacity * 4ull;
     if (jit_full_flushes) *jit_full_flushes = m.stats.flush_full;
-    if (wfi_ticks) *wfi_ticks = m.stats.wfi_ticks;
+    if (wfi_ticks) {
+        uint64_t total = 0;
+        for (int i = 0; i < ncpus; i++)
+            total += __atomic_load_n(&m.percpu[i].wait_ticks, __ATOMIC_RELAXED);
+        *wfi_ticks = total;
+    }
 }

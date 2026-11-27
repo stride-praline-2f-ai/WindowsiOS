@@ -1528,27 +1528,39 @@ static int translate_msr_inline(Emit *e, uint32_t insn, uint64_t pc) {
    helper when they are off. */
 #define COMMPAGE_TIMEBASE_OFFSET 0xfffffc088ull
 #define COMMPAGE_TIMEBASE_TYPE   0xfffffc090ull
-static int translate_counter(Emit *e, uint32_t insn, uint64_t pc, int physical) {
+enum CounterKind { PHYSICAL_COUNTER, VIRTUAL_COUNTER, CYCLE_COUNTER };
+
+static int translate_counter(Emit *e, uint32_t insn, uint64_t pc, enum CounterKind kind) {
     static int type = -1;
     if (type < 0) type = *(volatile uint8_t *)(uintptr_t)COMMPAGE_TIMEBASE_TYPE;
-    if (type == 0) return 0; /* the kernel's own path: leave it to the helper */
+    if (type < 1 || type > 3) return 0; /* use mach_absolute_time in the helper */
     int rt = insn & 0x1f;
-    if (rt == 31) return 1;
-    if (!(e->flags & HV_BLOCK_EL1)) {
-        put(e, 0xb9400000u | (HV_CPU_EL0_CNT / 4) << 10 | 28 << 5 | 6); /* ldr w6, [x28, #el0_cnt] */
-        put(e, 0x36000000u | (physical ? 0u : 1u) << 19 | 6);         /* tbz w6, #enable, helper (patched) */
+    int gated = !(e->flags & HV_BLOCK_EL1) && kind != CYCLE_COUNTER;
+    if (rt == 31) return !gated; /* the helper still checks access for MRS XZR */
+    uint32_t slow = e->nool;
+    if (gated) {
+        put(e, 0xb9400000u | (HV_CPU_EL0_CNT / 4) << 10 | 28 << 5 | 6);
+        put(e, 0x36000000u | (kind == VIRTUAL_COUNTER ? 1u : 0u) << 19 | 6);
         put_ool(e, (Ool){.kind = OOL_MRS, .pc = pc, .insn = insn});
     }
-    uint32_t slow = e->nool - 1;
-    int el0 = !(e->flags & HV_BLOCK_EL1);
     int r = is_stolen(rt) ? 15 : rt;
-    if (type == 1) put(e, 0xd5033fdfu);                                  /* isb; then CNTVCT_EL0 */
-    put(e, (type == 1 ? 0xd53be040u : type == 2 ? 0xd53be0c0u : 0xd53cfac0u) | (uint32_t)r);
+    /* Mach can use a different counter from raw CNTVCT on recent devices.
+       Like libsystem, retry if sleep changed the offset during the read.
+       EOR/CBNZ preserve guest flags. */
+    uint32_t retry = e->n;
     put_lit(e, 6, COMMPAGE_TIMEBASE_OFFSET);
+    put(e, LDR_X(7, 6, 0));
+    if (type == 1) put(e, 0xd5033fdfu);
+    put(e, (type == 1 ? 0xd53be040u : type == 2 ? 0xd53be0c0u : 0xd53cfac0u) | (uint32_t)r);
     put(e, LDR_X(6, 6, 0));
-    put(e, ADD_LSL(r, r, 6, 0));
-    if (r != rt) put(e, STR_X(r, 28, slot_of(rt)));
-    if (el0) e->ool[slow].join = e->n;
+    put(e, 0xca0700c6u); /* eor x6, x6, x7 */
+    uint32_t branch = e->n;
+    put(e, CBNZ_X(6));
+    patch_branch(&e->w[branch], (int64_t)retry - branch);
+    put(e, ADD_LSL(r, r, 7, 0));
+    if (kind == CYCLE_COUNTER) put(e, 0xd379e000u | (uint32_t)r << 5 | (uint32_t)r);
+    if (is_stolen(rt)) put(e, STR_X(r, 28, slot_of(rt)));
+    if (gated) e->ool[slow].join = e->n;
     return 1;
 }
 
@@ -1564,16 +1576,10 @@ static int translate_sysreg_inline(Emit *e, uint32_t insn, uint64_t pc) {
     case SR(3, 3, 14, 0, 1): /* CNTPCT_EL0 */
     case SR(3, 3, 14, 0, 5): /* CNTPCTSS_EL0 */
         if (!read) return 0;
-        return translate_counter(e, insn, pc, reg == SR(3, 3, 14, 0, 1) || reg == SR(3, 3, 14, 0, 5));
-    case SR(3, 3, 9, 13, 0): { /* PMCCNTR_EL0: read on every Windows 11 KiSwapContext */
-        if (!read) return 0;
-        if (rt == 31) return 1;
-        int r = is_stolen(rt) ? 15 : rt;
-        put(e, 0xd53be040u | (uint32_t)r);                        /* mrs xr, cntvct_el0 */
-        put(e, 0xd379e000u | (uint32_t)r << 5 | (uint32_t)r);     /* lsl xr, xr, #7 (~3.072 GHz) */
-        if (r != rt) put(e, STR_X(r, 28, slot_of(rt)));
-        return 1;
-    }
+        return translate_counter(e, insn, pc,
+            reg == SR(3, 3, 14, 0, 1) || reg == SR(3, 3, 14, 0, 5) ? PHYSICAL_COUNTER : VIRTUAL_COUNTER);
+    case SR(3, 3, 9, 13, 0): /* PMCCNTR_EL0: same 128 cycles per Mach tick as read_reg */
+        return read && translate_counter(e, insn, pc, CYCLE_COUNTER);
     case SR(3, 3, 4, 2, 0): /* NZCV */
         put_native_sysreg(e, insn, read);
         return 1;
@@ -2189,7 +2195,7 @@ int hv_translate_place(HvMachine *m, HvBlock *b) {
         m->slots[slot] = (uint64_t)(uintptr_t)code;
         uint32_t at = e->site[k].at;
         int64_t off = code - ((e->site[k].cold ? cold : dst) + at);
-        if (off >= -(1 << 25) && off < (1 << 25)) (e->site[k].cold ? e->cold : e->hot)[at] = 0x14000000u | (uint32_t)(off & 0x3ffffff);
+        if (off >= -(1 << 25) && off < (1 << 25)) (e->site[k].cold ? e->cold : e->hot)[at] = hv_chain_instruction(off);
         if (e->site[k].has_cond) hv_branch_retarget(&e->hot[e->site[k].cond_at], code - (dst + e->site[k].cond_at));
         if (m->stats_interval) m->stats.chained_early++;
     }

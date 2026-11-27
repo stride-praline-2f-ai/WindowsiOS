@@ -105,17 +105,20 @@ static int hppi_ex(HvGic *g, int c, int masked, uint8_t *out_prio, int *out_grp)
     return best;
 }
 
+static void update_cpu_lines(HvGic *g, int c) {
+    int grp = 1;
+    int i = hppi_ex(g, c, 1, NULL, &grp);
+    HvPerCpu *p = &g->m->percpu[c];
+    int irq = i != SPURIOUS && grp == 1, fiq = i != SPURIOUS && grp == 0;
+    int raised = (irq && !p->irq_line) || (fiq && !p->fiq_line);
+    p->irq_line = irq;
+    p->fiq_line = fiq;
+    if (raised) __atomic_store_n(&p->last_raised_intid, (unsigned)i, __ATOMIC_RELAXED);
+    if (raised && g->m->cpus[c] && g->m->ncpus > 1) hv_cpu_wake(g->m->cpus[c]); /* it may be asleep in WFI, or running */
+}
+
 static void hv_gicv3_update_body(HvGic *g) {
-    for (int c = 0; c < ncpus(g); c++) {
-        int grp = 1;
-        int i = hppi_ex(g, c, 1, NULL, &grp);
-        HvPerCpu *p = &g->m->percpu[c];
-        int irq = i != SPURIOUS && grp == 1, fiq = i != SPURIOUS && grp == 0;
-        int raised = (irq && !p->irq_line) || (fiq && !p->fiq_line);
-        p->irq_line = irq;
-        p->fiq_line = fiq;
-        if (raised && g->m->cpus[c] && g->m->ncpus > 1) hv_cpu_wake(g->m->cpus[c]); /* it may be asleep in WFI, or running */
-    }
+    for (int c = 0; c < ncpus(g); c++) update_cpu_lines(g, c);
 }
 
 static void hv_gicv3_set_irq_body(HvGic *g, int intid, int level) {
@@ -134,7 +137,8 @@ static void hv_gicv3_set_ppi_body(HvGic *g, int c, int intid, int level) {
     if (k->level[intid] == level) return; /* the timer re-asserts every tick */
     if (k->edge[intid] && level) k->latch[intid] = 1;
     k->level[intid] = (uint8_t)level;
-    hv_gicv3_update(g);
+    /* A banked timer interrupt can only change its owning CPU's lines. */
+    update_cpu_lines(g, c);
 }
 
 static void hv_gicv3_pend_body(HvGic *g, int intid) {

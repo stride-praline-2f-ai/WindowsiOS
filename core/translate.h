@@ -40,6 +40,12 @@ int hv_translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32_t a
 int hv_translate_place(HvMachine *m, HvBlock *b);
 uint32_t hv_translate_last_words(void);
 
+/* B to the next word is a fall-through. Keep one patchable instruction at the
+   site so invalidation can always restore the original branch to its stub. */
+static inline uint32_t hv_chain_instruction(int64_t word_offset) {
+    return word_offset == 1 ? 0xd503201fu : 0x14000000u | ((uint32_t)word_offset & 0x03ffffffu);
+}
+
 int hv_branch_retarget(uint32_t *w, int64_t off);
 
 #endif

@@ -3,6 +3,7 @@
 #include <mach/mach.h>
 #include <mach/mach_time.h>
 #include <sched.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <dlfcn.h>
@@ -34,7 +35,7 @@ void hv_flush_blocks(HvMachine *m) {
     memset(m->hash, 0, sizeof m->hash);
     m->nblocks = 0;
     m->nslots = 0;
-    m->nxchained = 0;
+    memset(m->xchain_heads, 0, sizeof m->xchain_heads);
     hv_jit_reset(&m->jit);
     m->jit.limit = hv_knob[HV_K_JITCAP] > 0 ? ((size_t)hv_knob[HV_K_JITCAP] << 20) / sizeof(uint32_t) : 0; /* MB of it to use (testing) */
     /* HV_JIT_POISON: nothing old is left to run, so a stale pointer faults where it is used. */
@@ -453,7 +454,10 @@ static int wait_for_interrupt(HvCpu *cpu) {
     HvMachine *m = cpu->m;
     uint64_t deadline = m->tick ? m->tick(m, cpu) : 0;
     HvPerCpu *p = cpu->pc_state;
-    if (p->irq_line || p->fiq_line) return 0;
+    if (p->irq_line || p->fiq_line) {
+        __atomic_fetch_add(&p->wait_irq_pending, 1, __ATOMIC_RELAXED);
+        return 0;
+    }
     if (!m->tick) return -1; /* nothing could ever wake us */
     uint64_t now = mach_absolute_time();
     uint64_t wait_ticks = deadline && deadline > now ? deadline - now : 240000; /* the counter runs at 24 MHz */
@@ -485,12 +489,17 @@ static int wait_for_interrupt(HvCpu *cpu) {
         __asm__ volatile("clrex" ::: "memory");
     }
     pthread_mutex_lock(&p->wake_mu);
+    int wait_result = 0;
     if (!p->wake_pending) {
         struct timespec ts = {(time_t)(wait_ticks / 24000000), (long)(wait_ticks % 24000000) * 1000 / 24};
-        pthread_cond_timedwait_relative_np(&p->wake_cv, &p->wake_mu, &ts);
+        wait_result = pthread_cond_timedwait_relative_np(&p->wake_cv, &p->wake_mu, &ts);
     }
+    uint64_t *reason = p->wake_pending ? &p->wait_signals :
+                       wait_result == ETIMEDOUT ? &p->wait_timeouts : &p->wait_early;
+    __atomic_fetch_add(reason, 1, __ATOMIC_RELAXED);
     p->wake_pending = 0;
     pthread_mutex_unlock(&p->wake_mu);
+    __atomic_fetch_add(&p->wait_ticks, mach_absolute_time() - t0, __ATOMIC_RELAXED);
     unpark(cpu);
     hv_big_lock(m);
     m->stats.wfi++;
@@ -758,12 +767,14 @@ static void chain(HvMachine *m, uint64_t *slot, HvBlock *b) {
             return;
         }
         m->slot_xpa[idx] = page_pa | 1;
-        m->xchained[m->nxchained++] = idx;
+        uint32_t *head = hv_xchain_head(m, page_pa);
+        m->xchain_next[idx] = *head;
+        *head = idx + 1;
         __atomic_store_n(slot, (uint64_t)(uintptr_t)b->code, __ATOMIC_RELEASE);
         uint32_t *site = m->slot_site[idx];
         int64_t off = site ? b->code - site : 0;
         if (site && off >= -(1 << 25) && off < (1 << 25)) {
-            uint32_t insn = 0x14000000u | (uint32_t)(off & 0x3ffffff);
+            uint32_t insn = hv_chain_instruction(off);
             hv_jit_write(&m->jit, site, &insn, 4);
             hv_jit_finish(&m->jit, site, 1);
         }
@@ -777,7 +788,7 @@ static void chain(HvMachine *m, uint64_t *slot, HvBlock *b) {
     uint32_t *site = m->slot_site[slot - m->slots];
     int64_t off = site ? b->code - site : 0;
     if (site && off >= -(1 << 25) && off < (1 << 25)) {
-        uint32_t insn = 0x14000000u | (uint32_t)(off & 0x3ffffff);
+        uint32_t insn = hv_chain_instruction(off);
         hv_jit_write(&m->jit, site, &insn, 4);
         hv_jit_finish(&m->jit, site, 1);
     }
@@ -923,7 +934,8 @@ static int run_loop(HvCpu *cpu, int one) {
             continue;
         }
         /* Someone asked the CPU to leave (the 1 ms kicker, a device, an invalidation): service devices now. */
-        int kicked = __atomic_exchange_n(&cpu->exit_req, 0, __ATOMIC_RELAXED) != 0;
+        int kicked = __atomic_load_n(&cpu->exit_req, __ATOMIC_RELAXED);
+        if (kicked) __atomic_exchange_n(&cpu->exit_req, 0, __ATOMIC_RELAXED);
         if (kicked && m->big_lock_on) {
             /* Give another CPU its turn. Whatever it does in between may touch
                what this CPU's exclusive monitor watches, so the monitor clears. */

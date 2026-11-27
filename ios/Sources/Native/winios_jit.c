@@ -4,6 +4,8 @@
  * Adapted from Henge (Leviidev/Henge, GPL-2.0-or-later).
  */
 #include "winios_jit.h"
+#include "winios_profile.h"
+#include <pthread.h>
 #include "winvirt.h"
 
 #include <TargetConditionals.h>
@@ -87,36 +89,47 @@ static uint64_t g_guest_ram_bytes;
 static atomic_bool g_jit_live;
 static char g_status[256] = "Not initialized";
 
+static pthread_once_t profile_once = PTHREAD_ONCE_INIT;
+static WinIosProfile profile;
+static uint64_t physical_mib;
+static _Atomic(const char *) ram_reason = "preallocation unavailable";
+
+static void detect_profile(void) {
+    char model[64] = {0};
+    uint64_t bytes = 0;
+    size_t n = sizeof bytes;
+    if (sysctlbyname("hw.memsize", &bytes, &n, NULL, 0) == 0) physical_mib = bytes >> 20;
+    n = sizeof model;
+    if (sysctlbyname("hw.machine", model, &n, NULL, 0) == 0)
+        profile = winios_classify_device(model, physical_mib);
+}
+
+WinIosProfile winios_device_profile(void) {
+    pthread_once(&profile_once, detect_profile);
+    return profile;
+}
+
+const char *winios_ram_selection_reason(void) { return ram_reason; }
+
 static void prealloc_ledger_exempt_ram(void) {
     if (g_guest_ram) return;
-    uint64_t phys_mem = 0;
-    size_t len = sizeof phys_mem;
-    sysctlbyname("hw.memsize", &phys_mem, &len, NULL, 0);
-    uint64_t phys_mb = phys_mem >> 20;
-    /* iPad Pro M4 1/2 TB configurations have 16 GiB of unified memory.
-     * Prefer 6 GiB guest RAM on these models, while retaining at least
-     * 8 GiB of physical headroom for iPadOS, Metal, JIT, and other apps.
-     * The existing iPhone/8 GiB iPad limit stays untouched.  Every size
-     * is only a candidate: the ledger-exempt VM allocation can fail,
-     * in which case we fall back rather than assuming the memory exists.
-     * Do not request all 16 GiB just because the iPad advertises it. */
-    char machine[64] = {0};
-    size_t machine_len = sizeof machine;
-    bool m4_13_ipad = sysctlbyname("hw.machine", machine, &machine_len, NULL, 0) == 0 &&
-                      (!strcmp(machine, "iPad16,5") || !strcmp(machine, "iPad16,6"));
-    bool high_mem_ipad = m4_13_ipad && phys_mb >= 14u * 1024u;
+    bool high_mem_ipad = winios_device_profile() == WINIOS_M4_13_16GB;
+    uint64_t available = winios_available_memory_bytes() >> 20;
     static const uint64_t default_candidates_mb[] = {4608, 4096, 3584, 3072, 2560, 2048};
-    static const uint64_t m4_16gb_candidates_mb[] = {6144, 5632, 5120, 4608, 4096, 3584, 3072, 2560, 2048};
+    static const uint64_t m4_16gb_candidates_mb[] = {
+        12288, 11264, 10240, 9216, 8192, 7168, 6144, 5632, 5120, 4608, 4096, 3584, 3072, 2560, 2048
+    };
     const uint64_t *candidates_mb = high_mem_ipad ? m4_16gb_candidates_mb : default_candidates_mb;
     size_t n_candidates = high_mem_ipad
         ? sizeof(m4_16gb_candidates_mb) / sizeof(m4_16gb_candidates_mb[0])
         : sizeof(default_candidates_mb) / sizeof(default_candidates_mb[0]);
-    WINIOS_LOG("RAM policy: model=%s physical=%llu MiB profile=%s",
-               machine, (unsigned long long)phys_mb,
-               high_mem_ipad ? "M4-16GB 6GiB" : "compatible");
+    ram_reason = "target allocated";
     for (size_t i = 0; i < n_candidates; i++) {
         uint64_t mb = candidates_mb[i];
-        if (phys_mb > 0 && mb + 2560 > phys_mb) continue;
+        if (!winios_ram_fits(profile, mb, physical_mib, available)) {
+            ram_reason = "memory headroom";
+            continue;
+        }
         uint8_t *p = hv_alloc_no_footprint(mb << 20);
         if (p) {
             g_guest_ram = p;
@@ -125,6 +138,7 @@ static void prealloc_ledger_exempt_ram(void) {
                        (unsigned long long)mb, (void *)p);
             return;
         }
+        ram_reason = "allocation failed";
     }
     WINIOS_LOG("ledger-exempt Guest RAM pre-allocation unavailable; will fall back at VM start");
 }
@@ -249,6 +263,7 @@ bool winios_jit_acquire(size_t bytes, bool detach_after) {
                     WinIosDualMapping m = {(uint8_t *)rw, rx, bytes};
                     if (jit_selftest(&m)) {
                         g_mapping = m;
+                        if (winios_device_profile() == WINIOS_M4_13_16GB) prealloc_ledger_exempt_ram();
                         atomic_store(&g_jit_live, true);
                         set_status("Live (%zu MiB plain RX/RW)", bytes >> 20);
                         return true;

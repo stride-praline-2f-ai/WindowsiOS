@@ -22,6 +22,9 @@ on:
       - 'devices/**'
       - 'host/**'
       - 'Makefile'
+      - 'firmware/**'
+      - 'tests/test_m4_firmware.py'
+      - 'tests/test_ios_profile.c'
 
 permissions:
   contents: read
@@ -33,7 +36,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  m4-firmware:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install EDK2 cross compiler and build tools
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu acpica-tools nasm uuid-dev qemu-system-arm
+      - name: Build M4 ArmVirt guest firmware
+        run: bash scripts/ci_build_m4_firmware.sh
+      - name: Check model, RAM boundaries and guest framebuffer
+        run: |
+          cc -std=c11 -Wall -Werror -Iios/Sources/Native tests/test_ios_profile.c -o "$RUNNER_TEMP/test_ios_profile"
+          "$RUNNER_TEMP/test_ios_profile"
+          python3 tests/test_m4_firmware.py build/firmware/m4-1600x1200.fd
+      - uses: actions/upload-artifact@v4
+        with:
+          name: m4-armvirt
+          path: build/firmware/
+          if-no-files-found: error
   ipa:
+    needs: m4-firmware
     runs-on: xcode-27
     timeout-minutes: 90
     defaults:
@@ -47,14 +72,22 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: m4-armvirt
+          path: build/firmware
+
       - name: Install build tools
         run: |
           test "$(uname -m)" = arm64
-          xcodebuild -version
-          xcodebuild -version | head -n 1 | grep -Eq '^Xcode 27([. ]|$)' || {
-            echo "This build requires Xcode 27; refusing to produce an Xcode 16 IPA." >&2
+          # Capture xcodebuild output exactly once. Piping it through head -n 1
+          # closes stdout early and can abort the Xcode CLI with SIGPIPE.
+          xcode_version_output="$(xcodebuild -version)"
+          printf '%s\n' "$xcode_version_output"
+          if [[ ! "$xcode_version_output" =~ ^Xcode[[:space:]]+27([.]|[[:space:]]|$) ]]; then
+            echo "::error::This build requires Xcode 27; installed version is: $xcode_version_output" >&2
             exit 1
-          }
+          fi
           xcrun --sdk iphoneos --show-sdk-version
           brew install xcodegen meson ninja pkg-config python
 
