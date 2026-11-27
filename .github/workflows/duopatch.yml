@@ -1,0 +1,25 @@
+name: Package DuoPatch
+on:
+  push:
+    branches: [build/duopatch-27-2]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build device app
+        run: xcodebuild -project DuoPatch/DuoPatch.xcodeproj -scheme DuoPatch -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
+      - name: Package IPA
+        run: |
+          mkdir Payload
+          cp -R build/Build/Products/Release-iphoneos/DuoPatch.app Payload/
+          zip -qry DuoPatch.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DuoPatch-unsigned
+          path: DuoPatch.ipa
+          if-no-files-found: error
