@@ -58,8 +58,14 @@ core += '''
     let adapter = patchMatchAdapter(info, adapters: [plex])
     let mixPad = app.id == "com.allenheath.SQU.MixPad"
 '''
-core += section(1357, 1363)
+core += section(1357, 1361)
 core += '''
+    if let adapter {
+        let status = adapter.supportedBuild ? "supported build" : "unsupported build"
+        print("Adapter: " + adapter.adapter.name + " (" + status + ")")
+    } else {
+        print(mixPad ? "Adapter: SQ MixPad (Mac required)" : "Adapter: generic")
+    }
     if options.inspect {
         if mixPad { print("SQ MixPad requires the macOS native adapter.") }
         return log.joined(separator: "\\n")
