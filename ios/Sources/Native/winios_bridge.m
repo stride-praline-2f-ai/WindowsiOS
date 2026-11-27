@@ -704,6 +704,8 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
                      usage.ru_utime.tv_usec + usage.ru_stime.tv_usec;
     NSDictionary *row = @{@"phase": phase, @"uptime_s": @(CFAbsoluteTimeGetCurrent() - _bootStartTime),
                           @"mach_ticks": @(mach_absolute_time()), @"process_cpu_us": @(cpuUs),
+                          @"invalidation_slots_examined": @(__atomic_load_n(&machine->xchain_examined, __ATOMIC_RELAXED)),
+                          @"invalidation_slots_removed": @(__atomic_load_n(&machine->xchain_removed, __ATOMIC_RELAXED)),
                           @"jit_generation": @(__atomic_load_n(&machine->jit_gen, __ATOMIC_RELAXED)),
                           @"thermal": @(NSProcessInfo.processInfo.thermalState),
                           @"cpus": cpus, @"threads": threads};

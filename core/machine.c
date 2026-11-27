@@ -74,8 +74,8 @@ static int init_rest(HvMachine *m) {
     m->slot_cond = calloc(m->max_slots, sizeof *m->slot_cond);
     m->slot_xa = calloc(m->max_slots, sizeof *m->slot_xa);
     m->slot_xpa = calloc(m->max_slots, sizeof *m->slot_xpa);
-    m->xchained = calloc(m->max_slots, sizeof *m->xchained);
-    if (!m->slots || !m->slot_site || !m->slot_stub || !m->slot_cond || !m->slot_xa || !m->slot_xpa || !m->xchained) return -1;
+    m->xchain_next = calloc(m->max_slots, sizeof *m->xchain_next);
+    if (!m->slots || !m->slot_site || !m->slot_stub || !m->slot_cond || !m->slot_xa || !m->slot_xpa || !m->xchain_next) return -1;
     pthread_mutex_init(&m->big_mu, NULL);
     pthread_cond_init(&m->big_cv, NULL);
     pthread_mutexattr_t ra;
@@ -277,7 +277,7 @@ void hv_machine_free(HvMachine *m) {
     free(m->slot_cond);
     free(m->slot_xa);
     free(m->slot_xpa);
-    free(m->xchained);
+    free(m->xchain_next);
 }
 
 int hv_machine_add_ram(HvMachine *m, uint64_t pa, uint64_t size, void *host, int readonly) {
@@ -341,10 +341,13 @@ void hv_invalidate_code(HvMachine *m, uint64_t pa) {
        as chaining them is: one that saw the old generation is done by now. */
     pthread_mutex_lock(&m->tr_mu);
     uint64_t tpa = (r->pa + (pg << HV_TLB_PAGE_BITS)) | 1;
-    for (uint32_t k = 0; k < m->nxchained;) {
-        uint32_t idx = m->xchained[k];
+    uint32_t *link = hv_xchain_head(m, tpa);
+    uint32_t examined = 0, removed = 0;
+    while (*link) {
+        uint32_t idx = *link - 1;
+        examined++;
         if (m->slot_xpa[idx] != tpa) {
-            k++;
+            link = &m->xchain_next[idx];
             continue;
         }
         m->slot_xpa[idx] = 0;
@@ -355,8 +358,11 @@ void hv_invalidate_code(HvMachine *m, uint64_t pa) {
             hv_jit_write(&m->jit, site, &insn, 4);
             hv_jit_finish(&m->jit, site, 1);
         }
-        m->xchained[k] = m->xchained[--m->nxchained];
+        *link = m->xchain_next[idx];
+        removed++;
     }
+    __atomic_fetch_add(&m->xchain_examined, examined, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&m->xchain_removed, removed, __ATOMIC_RELAXED);
     pthread_mutex_unlock(&m->tr_mu);
     /* The indirect-branch cache may lead into the stale blocks: start it over,
        here at once and on the other CPUs before they next leave a block (their

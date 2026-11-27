@@ -245,9 +245,11 @@ typedef struct HvMachine {
     /* Exits to another page (see put_branch_exit): the host addend the target
        page's TLB entry must hold for the exit to go straight to the chained
        block (0: a same-page exit), and once chained, the target's physical page
-       (| 1) so that invalidating its code can unchain it. xchained lists them. */
+       (| 1) so that invalidating its code can unchain it. The page index uses slot + 1, reserving zero for the end of a list. */
     uint64_t *slot_xa, *slot_xpa;
-    uint32_t *xchained, nxchained;
+    uint32_t *xchain_next;
+    uint32_t xchain_heads[16384];
+    uint64_t xchain_examined, xchain_removed;
     uint32_t nslots;
     HvCpu *cpu;              /* CPU 0: the one that polls devices */
     HvCpu *cpus[HV_MAX_CPUS]; /* every CPU, so device and invalidation code can ask them to leave */
@@ -272,6 +274,11 @@ typedef struct HvMachine {
     uint64_t *prof;
     uint32_t prof_head, prof_tail;
 } HvMachine;
+
+static inline uint32_t *hv_xchain_head(HvMachine *m, uint64_t page_pa) {
+    uint64_t page = page_pa >> HV_TLB_PAGE_BITS;
+    return &m->xchain_heads[(page ^ (page >> 14)) % (sizeof m->xchain_heads / sizeof m->xchain_heads[0])];
+}
 
 static inline uint32_t hv_block_hash(uint64_t va, uint64_t pa, uint32_t flags) {
     uint64_t h = (va >> 2) ^ (pa >> 2) * 0x9e3779b97f4a7c15ull ^ flags;
