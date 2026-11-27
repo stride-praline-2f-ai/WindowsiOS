@@ -80,4 +80,27 @@ core += '''
 '''
 core += section(1429, 1436)
 core += '    return log.joined(separator: "\\n")\n}\n'
+# ZIP writers can mark an empty directory using external attributes alone.
+start = core.index('        let directory = rawPath.hasSuffix')
+end = core.index('        try ipaCheckZIPExtras(central', start)
+core = core[:start] + r'''        let attributes = central.u32(offset + 38)
+        let unixMode = attributes >> 16
+        let kind = unixMode & 0o170000
+        let label = visible(rawPath)
+        if kind == 0o120000 { throw Problem("Unsupported symbolic link: \(label)") }
+        guard [0, 0o040000, 0o100000].contains(kind) else {
+            throw Problem("Unsupported special file at \(label) (mode \(String(unixMode, radix: 8))).")
+        }
+        guard attributes & 8 == 0 else { throw Problem("Unexpected ZIP volume label: \(label)") }
+        let slash = rawPath.hasSuffix("/")
+        let directory = slash || kind == 0o040000 || attributes & 0x10 != 0
+        guard !directory || expanded == 0 else { throw Problem("Directory has file contents: \(label)") }
+        guard !directory || kind != 0o100000 || slash else { throw Problem("Conflicting regular-file and directory attributes: \(label)") }
+        guard method != 0 || compressed == expanded else { throw Problem("Stored entry sizes disagree: \(label)") }
+        let path = slash ? String(rawPath.dropLast()) : rawPath
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false)
+        guard !parts.isEmpty, parts.count <= 40, parts.allSatisfy(ipaSafeComponent) else {
+            throw Problem("IPA ZIP contains an unsafe path.")
+        }
+''' + core[end:]
 (root/'App/Core.swift').write_text('import ZIPFoundation\n' + core)
